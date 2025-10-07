@@ -11,25 +11,69 @@ const string MOVE_U = "U ";
 const string MOVE_D = "D ";
 const string ZERO = "0\n";
 
-enum CellMode {
+const bool TRUE = true;
+const bool FALSE = false;
+
+enum CellDir {
     EMPTY = 0,
-    LEFT = 1,
-    RIGHT = 2,
-    UP = 3,
+    RIGHT = 1,
+    UP = 2,
+    LEFT = 3,
     DOWN = 4,
 };
+
+CellDir makeCellDir(int d) {
+    switch(d) {
+        case 0: return EMPTY;
+        case 1: return RIGHT;
+        case 2: return UP;
+        case 3: return LEFT;
+        case 4: return DOWN;
+        default: return EMPTY;
+    }
+}
+
+CellDir getOppositeDir(CellDir d) {
+    switch(d) {
+        case RIGHT: return LEFT;
+        case LEFT: return RIGHT;
+        case UP: return DOWN;
+        case DOWN: return UP;
+        default: return EMPTY;
+    }
+}
+
+int getDirIndex(CellDir d) {
+    switch(d) {
+        case RIGHT: return 1;
+        case UP: return 2;
+        case LEFT: return 3;
+        case DOWN: return 4;
+        default: return 0;
+    }
+}
+
+int getOpoositeDirIndex(int d) {
+    switch(d) {
+        case 1: return 3;
+        case 2: return 4;
+        case 3: return 1;
+        case 4: return 2;
+        default: return 0;
+    }
+}
 
 class Cell {
     private :
         int line_no;
-        CellMode mode;
+        CellDir mode;
     public :
         Cell() {
             line_no = -1;
             mode = EMPTY;
         }
         
-        Cell(int ln, CellMode m) {
+        Cell(int ln, CellDir m) {
             line_no = ln;
             mode = m;
         }
@@ -38,7 +82,7 @@ class Cell {
             return line_no;
         }
 
-        CellMode getMode() {
+        CellDir getMode() {
             return mode;
         }
 };
@@ -94,7 +138,7 @@ class MetroMap {
                 pair<int,int> end = line_ends[i][0]; 
                 pair<int,int> curr = start;
                 while (curr != end) {
-                    CellMode mode = grid[curr.second][curr.first].getMode();
+                    CellDir mode = grid[curr.second][curr.first].getMode();
                     if (mode == LEFT) {
                         curr.first -= 1;
                         line_path[i] += MOVE_L;
@@ -147,10 +191,38 @@ class MetroMap {
             }
         }
 
+        // Getters for Encoder
+
+        vector<pair<int,int>>& getLineStarts(int k) {
+            if (k < 0 || k >= lines) {
+                throw out_of_range("Invalid line number in getLineStarts");
+            }
+            return line_starts[k];
+        }
+
+        vector<pair<int,int>>& getLineEnds(int k) {
+            if (k < 0 || k >= lines) {
+                throw out_of_range("Invalid line number in getLineEnds");
+            }
+            return line_ends[k];
+        }
+
         // Public Getters
 
         int getLineNum() {
             return lines;
+        }
+
+        int getRowNum() {
+            return rows;
+        }
+
+        int getColNum() {
+            return cols;
+        }
+
+        int getTurnLimit() {
+            return turn_limit;
         }
 
         string& getLineCells(int i) {
