@@ -51,61 +51,53 @@ private:
     string reconstructPath(int line_k) {
         auto &starts = metro_map.getLineStarts(line_k);
         auto &ends = metro_map.getLineEnds(line_k);
-        
-        if (starts.empty() || ends.empty()) return "0\n";
-        
+        if (starts.empty() || ends.empty()) return string("0\n");
+
         int start_x = starts[0].first, start_y = starts[0].second;
-        int end_x = ends[0].first, end_y = ends[0].second;
-        
-        string path = "";
+        int end_x   = ends[0].first,   end_y   = ends[0].second;
+
+        string path;
         int curr_x = start_x, curr_y = start_y;
-        
-        // Follow the path using Out_ variables
-        while (curr_x != end_x || curr_y != end_y) {
-            bool found_direction = false;
-            
-            // Check all four directions to find which Out_ variable is true
-            for (int dir = 1; dir <= 4; dir++) {
-                string out_var = "Out_" + to_string(curr_y) + "_" + to_string(curr_x) + "_" + to_string(line_k) + "_" + to_string(dir);
-                
-                if (variable_assignments.find(out_var) != variable_assignments.end() && 
-                    variable_assignments[out_var]) {
-                    
-                    // Move in this direction
-                    if (dir == RIGHT) {
-                        curr_x += 1;
-                        path += MOVE_R;
-                    } else if (dir == UP) {
-                        curr_y -= 1;
-                        path += MOVE_U;
-                    } else if (dir == LEFT) {
-                        curr_x -= 1;
-                        path += MOVE_L;
-                    } else if (dir == DOWN) {
-                        curr_y += 1;
-                        path += MOVE_D;
-                    }
-                    
-                    found_direction = true;
-                    break;
+
+        for (int steps = 0; steps <= M * N; ++steps) {
+            if (curr_x == end_x && curr_y == end_y) break;
+
+            // Count and find outgoing directions
+            int direction_count = 0;
+            int chosen_dir = -1;
+            for (int dir = 1; dir <= 4; ++dir) {
+                // Note: variables are (i=row=y, j=col=x)
+                string out_var = "Out_" + to_string(curr_y) + "_" + to_string(curr_x)
+                            + "_" + to_string(line_k) + "_" + to_string(dir);
+                auto it = variable_assignments.find(out_var);
+                if (it != variable_assignments.end() && it->second) {
+                    direction_count++;
+                    chosen_dir = dir;
                 }
             }
             
-            if (!found_direction) {
-                cerr << "Error: No valid direction found at (" << curr_x << "," << curr_y << ") for line " << line_k << endl;
+            // Verify exactly one outgoing direction
+            if (direction_count == 0) {
+                cerr << "Error: No outgoing direction from (" << curr_x << "," << curr_y
+                     << ") for line " << line_k << endl;
+                break;
+            } else if (direction_count > 1) {
+                cerr << "Error: Multiple outgoing directions (" << direction_count 
+                     << ") from (" << curr_x << "," << curr_y << ") for line " << line_k << endl;
                 break;
             }
             
-            // Safety check to prevent infinite loops
-            if (path.length() > 2 * (M + N) * 4) { // Each move is 2 chars, max path length estimate
-                cerr << "Error: Path too long, possible infinite loop for line " << line_k << endl;
-                break;
-            }
+            // Move in the chosen direction
+            if (chosen_dir == RIGHT) { curr_x += 1; path += MOVE_R; }
+            else if (chosen_dir == UP)   { curr_y -= 1; path += MOVE_U; }
+            else if (chosen_dir == LEFT) { curr_x -= 1; path += MOVE_L; }
+            else /*DOWN*/         { curr_y += 1; path += MOVE_D; }
         }
-        
+
         path += ZERO;
         return path;
     }
+
 
 public:
     SATDecoder(MetroMap &m) : metro_map(m) {
@@ -173,32 +165,25 @@ public:
 
     // Parse SAT output with variable mapping file
     bool parseSATOutputWithMappingFile(const string &sat_output_file, const string &mapping_file) {
-        // First load the variable mapping
         map<int, string> var_map;
         ifstream map_file(mapping_file);
         if (!map_file.is_open()) {
-            cerr << "Warning: Cannot open mapping file: " << mapping_file << endl;
-            // Try parsing without mapping (assuming variable names are preserved)
-            return parseSATOutput(sat_output_file);
+            cerr << "Error: Cannot open mapping file: " << mapping_file << endl;
+            return false;
         }
-
         string line;
         while (getline(map_file, line)) {
             if (line.empty()) continue;
             stringstream ss(line);
-            int var_num;
-            string var_name;
-            if (ss >> var_num >> var_name) {
-                var_map[var_num] = var_name;
-            }
+            int var_num; string var_name;
+            if (ss >> var_num >> var_name) var_map[var_num] = var_name;
         }
         map_file.close();
-
         cout << "Loaded " << var_map.size() << " variable mappings." << endl;
 
-        // Now parse SAT output using the mapping
         return parseSATOutputWithMapping(sat_output_file, var_map);
     }
+
 
     // Alternative: Parse SAT output with variable mapping
     bool parseSATOutputWithMapping(const string &sat_output_file, const map<int, string> &var_map) {
@@ -209,52 +194,63 @@ public:
         }
 
         string line;
-        bool satisfiable = false;
-        
-        // Read first line
-        if (getline(file, line)) {
-            if (line == "SAT") {
-                satisfiable = true;
-            } else if (line == "UNSAT") {
-                cout << "Problem is UNSATISFIABLE" << endl;
-                return false;
-            } else {
-                cerr << "Error: Invalid SAT solver output format" << endl;
-                return false;
-            }
-        }
+        bool got_status = false, is_sat = false;
 
-        if (!satisfiable) return false;
-
-        // Read variable assignments
         while (getline(file, line)) {
-            if (line.empty() || line == "0") continue;
-            
-            stringstream ss(line);
-            string var_str;
-            
-            while (ss >> var_str) {
-                if (var_str == "0") break;
-                
-                bool is_positive = true;
-                int var_num;
-                
-                if (var_str[0] == '-') {
-                    is_positive = false;
-                    var_num = stoi(var_str.substr(1));
-                } else {
-                    var_num = stoi(var_str);
+            if (line.empty()) continue;
+
+            // Comments
+            if (line[0] == 'c') continue;
+
+            // Status line variants: "SAT", "UNSAT", or "s SATISFIABLE"/"s UNSATISFIABLE"
+            if (!got_status) {
+                if (line == "SAT")          { is_sat = true;  got_status = true; continue; }
+                if (line == "UNSAT")        { is_sat = false; got_status = true; break; }
+                if (line.size() >= 2 && line[0] == 's') {
+                    if (line.find("SATISFIABLE") != string::npos && line.find("UN") == string::npos) {
+                        is_sat = true; got_status = true; continue;
+                    }
+                    if (line.find("UNSATISFIABLE") != string::npos) {
+                        is_sat = false; got_status = true; break;
+                    }
                 }
-                
-                if (var_map.find(var_num) != var_map.end()) {
-                    variable_assignments[var_map.at(var_num)] = is_positive;
+                // If it's not a status line, fall through and try to parse integers
+                got_status = true; // be forgiving; some tools print model immediately
+            }
+
+            // Model lines: may be prefixed by 'v'
+            stringstream ss(line);
+            string tok;
+            while (ss >> tok) {
+                if (tok == "v") continue;     // model prefix
+                if (tok == "0") break;        // end of model line
+
+                bool is_positive = true;
+                int var_num = 0;
+
+                if (tok[0] == '-') { is_positive = false; tok.erase(0,1); }
+                // Skip non-integers safely
+                char* endptr = nullptr;
+                long val = strtol(tok.c_str(), &endptr, 10);
+                if (endptr == tok.c_str() || *endptr != '\0') continue; // not a pure integer token
+                var_num = (int)val;
+
+                auto it = var_map.find(var_num);
+                if (it != var_map.end()) {
+                    variable_assignments[it->second] = is_positive;
                 }
             }
         }
 
         file.close();
+
+        if (!is_sat) {
+            cout << "Problem is UNSATISFIABLE" << endl;
+            return false;
+        }
         return true;
     }
+
 
     // Build solution grid from variable assignments
     void buildSolutionGrid() {
@@ -360,15 +356,16 @@ public:
 
 // Example usage function
 int main(int argc, char* argv[]) {
-    if (argc < 4 || argc > 5) {
-        cerr << "Usage: " << argv[0] << " <input_file> <sat_output_file> <output_file> [mapping_file]" << endl;
+    if (argc != 5) {
+        cerr << "Usage: " << argv[0]
+             << " <input_file> <sat_output_file> <output_file> <mapping_file>" << endl;
         return 1;
     }
 
-    string input_file = argv[1];
+    string input_file      = argv[1];
     string sat_output_file = argv[2];
-    string output_file = argv[3];
-    string mapping_file = (argc == 5) ? argv[4] : "";
+    string output_file     = argv[3];
+    string mapping_file    = argv[4];
 
     // Parse input file
     ifstream input_stream(input_file);
@@ -379,31 +376,18 @@ int main(int argc, char* argv[]) {
 
     MetroMap metro_map = parseInputFile(input_stream);
     input_stream.close();
-
     cout << "Input file parsed successfully." << endl;
 
-    // Create decoder
     SATDecoder decoder(metro_map);
 
-    // Parse SAT output
-    bool was_sat;
-    if (!mapping_file.empty()) {
-        was_sat = decoder.parseSATOutputWithMappingFile(sat_output_file, mapping_file);
-    } else {
-        was_sat = decoder.parseSATOutput(sat_output_file);
-    }
-    
+    // Mapping file is required
+    bool was_sat = decoder.parseSATOutputWithMappingFile(sat_output_file, mapping_file);
     if (was_sat) {
         decoder.buildSolutionGrid();
-        
-        // Debug output
         cout << "Solution found!" << endl;
         decoder.printSolutionGrid();
     }
-
-    // Write output
     decoder.writeOutput(output_file, was_sat);
     cout << "Output written to " << output_file << endl;
-
     return 0;
 }

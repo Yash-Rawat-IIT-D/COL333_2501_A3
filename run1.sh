@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <basename-without-extension>"
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <basename>"
+  echo "Example: $0 test   # expects test.city, writes test.satinput"
   exit 1
 fi
 
-base="$1"
+BASE="$1"
+CITY="${BASE}.city"
+SATIN="${BASE}.satinput"
 
-# Compile (adjust flags if needed)
-g++ -O2 -std=gnu++17 -o encoder encoder.cpp
+if [ ! -f "$CITY" ]; then
+  echo "Error: missing input $CITY"
+  exit 1
+fi
 
-# Produce DIMACS and varmap for the given basename:
-#   reads:  ${base}.city
-#   writes: ${base}.satinput and varmap.txt
-./encoder "$base"
+# encoder: <input_file> <output_cnf_file>
+./encoder "$CITY" "$SATIN"
+
+# Your encoder also writes the mapping as <cnf>.map (i.e., ${BASE}.satinput.map)
+MAP="${SATIN}.map"
+if [ ! -f "$MAP" ]; then
+  echo "Error: expected mapping file $MAP (written by encoder) not found."
+  exit 1
+fi
+
+echo "Wrote $SATIN and $MAP"
