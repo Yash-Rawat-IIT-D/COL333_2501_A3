@@ -53,7 +53,7 @@ int getDirIndex(CellDir d) {
     }
 }
 
-int getOpoositeDirIndex(int d) {
+int getOppositeDirIndex(int d) {
     switch(d) {
         case 1: return 3;
         case 2: return 4;
