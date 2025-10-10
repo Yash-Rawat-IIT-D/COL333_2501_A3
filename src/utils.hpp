@@ -281,14 +281,10 @@ void parseOutputFile(ofstream &output_file_stream, MetroMap &metro_map, bool was
     if (!was_sat) {
         output_file_stream << 0 << endl;
         output_file_stream.close();
+        return;
     }
 
     int lines = metro_map.getLineNum();
-
-    if (!was_sat) {
-        output_file_stream << 0 << endl;
-        return;
-    }
 
     for (int i = 0; i < lines; i++) {
         string path = metro_map.getLineCells(i);
