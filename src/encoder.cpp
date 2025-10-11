@@ -83,12 +83,32 @@ string __ord_lit_str(int i, int j, int k, int t) {
 string __rank_bit_lit_str(int i, int j, int k, int b) {
     ostringstream ss; ss << "RB_" << i << "_" << j << "_" << k << "_" << b; return ss.str();
 }
+
 string __eqpref_lit_str(int i, int j, int k, int dir, int p) {
     ostringstream ss; ss << "EQP_" << i << "_" << j << "_" << k << "_" << dir << "_" << p; return ss.str();
 }
+
 string __ltw_lit_str(int i, int j, int k, int dir, int p) {
     ostringstream ss; ss << "LTW_" << i << "_" << j << "_" << k << "_" << dir << "_" << p; return ss.str();
 }
+
+// string helper methods for turn limit encoding can be added here
+
+string __turn_lit_str(int i, int j, int k) {
+    ostringstream ss;
+    ss << "T_" << i << "_" << j << "_" << k;
+    return ss.str();
+}
+
+// Sequential counter s(i,t) for turns of line k (1-based i,t)
+string __turn_seq_name(int k, int i, int t){
+    ostringstream ss; ss << "TS_" << k << "_" << i << "_" << t; return ss.str();
+}
+// Optional per-line prefix if you later add more families
+string __turn_prefix(int k){
+    ostringstream ss; ss << "TL_k" << k << "_"; return ss.str();
+}
+
 
 // Clause class to represent a disjunction of literals
 
@@ -165,6 +185,22 @@ class SATEncoder {
             }
         }
 
+        bool out_of_bound_rev(int ni, int nj, int dir) {
+            // To Check if (i,j) ---dir---> (ni,nj) is valid
+            switch (dir) {
+            case RIGHT:
+                return nj - 1 < 0; // Out of bounds if moving left goes below column 0
+            case UP:
+                return ni + 1 >= M; // Out of bounds if moving down exceeds row limit
+            case LEFT:
+                return nj + 1 >= N; // Out of bounds if moving right exceeds column limit
+            case DOWN:
+                return ni - 1 < 0; // Out of bounds if moving up goes above row 0
+            default:
+                return true; // Invalid direction
+            }
+        }
+
     public :
         SATEncoder(MetroMap &m) : metro_map(m) {
             var_count = 0;  // No variables initially
@@ -174,7 +210,10 @@ class SATEncoder {
             J = metro_map.getTurnLimit();
         }
 
-        
+        void add_clause_to(vector<Clause>& bucket, std::initializer_list<Literal> lits){
+            Clause c; for (auto &L : lits) c.addLiteral(L); bucket.push_back(c);
+        }       
+    
         void amo_sinz_occ(int i, int j, vector<Literal> &lits) {
             
             assert(lits.size() == K);
@@ -544,14 +583,148 @@ class SATEncoder {
         }
 
 
+        // Helper methods for encoding turn limit constraints
+
+        void turn_limit_constraints(int i, int j, int k) {
+            // Implement turn limit constraints for cell (i, j) and line k
+            
+            string Tij = __turn_lit_str(i, j, k); track_literal(Tij);
+            string Xij = __occ_lit_str(i, j, k); track_literal(Xij);
+
+            vector<int> dirs; for(int d = 1; d <= 4; d++) if(!out_of_bounds(i,j,d)) dirs.push_back(d);
+
+            vector<int> in_dirs, out_dirs; // Valid incoming and outgoing directions
+            for(int d : dirs) {
+                if(!out_of_bound_rev(i,j,d)) in_dirs.push_back(d);
+                if(!out_of_bounds(i,j,d)) out_dirs.push_back(d);
+            } 
+
+            // Build IN/OUT name lists (only in-bounds dirs)
+            vector<string> INs, OUTs;
+            for(int d : in_dirs)  { string s = __in_lit_str(i,j,k,d); track_literal(s); INs.push_back(s); }
+            for(int d : out_dirs) { string s = __out_lit_str(i,j,k,d); track_literal(s); OUTs.push_back(s); }
+
+            // 1) Turn pairs imply T: for all d1,d2 with d1 != opp(d2)
+            for(int d1 : in_dirs) {
+                for(int d2 : out_dirs) {
+                    if(d1 == getOppositeDirIndex(d2)) continue; // No turn
+                    // (¬In(i,j,d1) ∨ ¬Out(i,j,d2) ∨ T(i,j))
+                    Clause c; 
+                    c.addLiteral(Literal(__in_lit_str(i,j,k,d1), false));
+                    c.addLiteral(Literal(__out_lit_str(i,j,k,d2), false));
+                    c.addLiteral(Literal(Tij, true));
+                    turn_clauses.push_back(c);
+                }
+            }
+
+            // 2) Straight forbids T: for each straight pair d vs opp(d)
+            for (int d1 : in_dirs) {
+                int d2 = getOppositeDirIndex(d1);
+                if (out_of_bounds(i,j,d2)) continue;
+                // (¬In(i,j,d1) ∨ ¬Out(i,j,d2) ∨ ¬T(i,j))
+                Clause c;
+                c.addLiteral(Literal(__in_lit_str(i,j,k,d1), false));
+                c.addLiteral(Literal(__out_lit_str(i,j,k,d2), false));
+                c.addLiteral(Literal(Tij, false));
+                turn_clauses.push_back(c);
+            }
+
+            // 3) Tie T to occupancy as well as In and Out 
+
+            Clause c_occ; c_occ.addLiteral(Literal(Tij, false)); c_occ.addLiteral(Literal(Xij, true)); turn_clauses.push_back(c_occ);
+
+            Clause c_in;  c_in.addLiteral(Literal(Tij, false));  for (auto &s: INs)  c_in.addLiteral(Literal(s, true));  turn_clauses.push_back(c_in);
+            Clause c_out; c_out.addLiteral(Literal(Tij, false)); for (auto &s: OUTs) c_out.addLiteral(Literal(s, true)); turn_clauses.push_back(c_out);
+
+            return;
+
+        }   
+
+        void sinz_amo_J_turns(int k, vector<string> &Tks, int J) {
+            int n = Tks.size();
+            
+            if (J == 0) {
+                // All must be false 
+                for (auto &x : Tks) {
+                    Clause c; c.addLiteral(Literal(x, false)); turn_clauses.push_back(c);
+                    return;
+                }
+            }
+
+            vector<vector<string>> S_lit_str (n+1, vector<string>(J+1));
+
+            
+            // Build s(i,t) literals for i = 1..n, t = 1..J
+
+            for(int i = 1; i <= n; i++) {
+                for(int t = 1; t <= J; t++) {
+                    string sinz_name = __turn_seq_name(k,i,t);
+                    track_literal(sinz_name);
+                    S_lit_str[i][t] = sinz_name;
+                }
+            }
+
+            auto S = [&](int i, int t){ return S_lit_str[i][t]; };
+
+            // Initialisation x1 => s(1,1) and forbid s(1,t) for t>1
+            {
+                Clause c; c.addLiteral(Literal(Tks[0], false)); c.addLiteral(Literal(S(1,1), true)); turn_clauses.push_back(c);
+                for(int t = 2; t <= J; t++) {
+                    Clause c2; c2.addLiteral(Literal(S(1, t), false)); turn_clauses.push_back(c2);
+                }
+            }
+
+            // Relation for i = 2..
+
+            for(int i = 2; i <= n; i++) {
+                // xi => s(i,1)
+                {
+                    Clause c; c.addLiteral(Literal(Tks[i-1], false)); c.addLiteral(Literal(S(i,1), true)); turn_clauses.push_back(c);
+                }
+
+                // s(i-1,1) => s(i,1) 
+                {
+                    Clause c; c.addLiteral(Literal(S(i-1,1), false)); c.addLiteral(Literal(S(i,1), true)); turn_clauses.push_back(c);
+                }
+
+                // (xi & s(i-1,t-1)) => s(i,t) for t = 2..J
+                for(int t = 2; t <= J; t++) {
+                    // s(i-1,t) => s(i,t)
+                    { Clause c; c.addLiteral(Literal(S(i-1,t), false)); c.addLiteral(Literal(S(i,t), true));
+                    turn_clauses.push_back(c); }
+                    // (x_i ∧ s(i-1,t-1)) => s(i,t)  as (¬x_i ∨ ¬s(i-1,t-1) ∨ s(i,t))
+                    { Clause c; c.addLiteral(Literal(Tks[i-1], false)); c.addLiteral(Literal(S(i-1,t-1), false)); c.addLiteral(Literal(S(i,t), true));
+                    turn_clauses.push_back(c); }
+                }
+
+                // Forbid s(i, J+1) implicitly: (x_i ∧ s(i-1,J)) ⇒ false => (¬x_i ∨ ¬s(i-1,J))
+                { Clause c; c.addLiteral(Literal(Tks[i-1], false)); c.addLiteral(Literal(S(i-1,J), false));
+                turn_clauses.push_back(c); }
+                
+            }
+
+        }
+
         void encodeTurnLimit() {
             // Encode turn limit constraints here
             // Ensure that no line exceeds the turn limit
             // Placeholder implementation
-            Clause clause;
-            clause.addLiteral(Literal("z1", true));
-            clause.addLiteral(Literal("z2", false));
-            turn_clauses.push_back(clause);
+            for(int k = 0; k < K; k++) {
+                vector<string> Tks; Tks.reserve(M*N); // Collect all T(i,j,k) literals for line k
+                for (int i = 0; i < M; i++) {
+                    for(int j = 0; j < N; j++) {
+                        // Example clause (to be replaced with actual turn limit logic)
+                        turn_limit_constraints(i, j, k);
+
+                        // Setup T(i,j,k) literal
+                        string Tij = __turn_lit_str(i, j, k);
+                        Tks.push_back(Tij);
+                        // No need to track here, done in turn_limit_constraints()
+                    }
+                }
+
+                sinz_amo_J_turns(k, Tks, J);
+            }
         }
 
 
