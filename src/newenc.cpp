@@ -139,11 +139,8 @@ class SATEncoder {
 
         // Problem Parameters
         int N, M, K, J; // Columns, Rows, Lines, Turn Limit
-
-        // CNF Representation
-        vector<Clause> clauses;
         
-         // CNF Representation - Organized by constraint type
+        // CNF Representation - Organized by constraint type
         vector<Clause> direction_clauses;       // Direction constraints  (AMO for each cell)
         vector<Clause> flow_clauses;            // In-degree ≤ 1 constraints (non-intersection)
         vector<Clause> path_coherence_clauses;  // Direction consistency between neighbors
@@ -459,6 +456,18 @@ class SATEncoder {
                 int i = normal.first;  // row
                 int j = normal.second; // col
                 
+                // Direction-Flow Connection: DIR_i_j_d => OUT_i_j_d for d ∈ {1,2,3,4}
+                for (int d = 1; d <= 4; d++) { // RIGHT, UP, LEFT, DOWN
+                    string dir_var = __dir_lit_str(i, j, d);
+                    string out_var = __out_lit_str(i, j, d);
+                    
+                    // DIR_i_j_d => OUT_i_j_d  ≡  ¬DIR_i_j_d ∨ OUT_i_j_d
+                    add_clause_to(path_coherence_clauses, {
+                        Literal(dir_var, false),
+                        Literal(out_var, true)
+                    });
+                }
+
                 // Direction coherence for non-endpoint cells
                 for (int d = 1; d <= 4; d++) { // RIGHT, UP, LEFT, DOWN
                     string dir_var = __dir_lit_str(i, j, d);
@@ -518,70 +527,82 @@ class SATEncoder {
         }
 
         void encodeSourceSinkConstraints(const vector<pair<int,int>> &sources, const vector<pair<int,int>> &sinks) {
-        // Handle sources
-        for (auto &source : sources) {
-            int src_i = source.first;   // row
-            int src_j = source.second;  // col
-            
-            // Source must not be empty
-            add_clause_to(source_sink_clauses, {
-                Literal(__dir_lit_str(src_i, src_j, EMPTY_DIR), false)
-            });
-            
-            // Source must have exactly one outgoing direction (ALO)
-            Clause out_alo;
-            for (int d = 1; d <= 4; d++) {
-                out_alo.addLiteral(Literal(__out_lit_str(src_i, src_j, d), true));
-            }
-            source_sink_clauses.push_back(out_alo);
-            
-            // Source must have no incoming directions
-            for (int d = 1; d <= 4; d++) {
+            // Handle sources
+            for (auto &source : sources) {
+                int src_i = source.first;   // row
+                int src_j = source.second;  // col
+                
+                // Direction-Flow Connection: DIR_i_j_d => OUT_i_j_d for d ∈ {1,2,3,4}
+                for (int d = 1; d <= 4; d++) { // RIGHT, UP, LEFT, DOWN
+                    string dir_var = __dir_lit_str(src_i, src_j, d);
+                    string out_var = __out_lit_str(src_i, src_j, d);
+
+                    // DIR_i_j_d => OUT_i_j_d  ≡  ¬DIR_i_j_d ∨ OUT_i_j_d
+                    add_clause_to(path_coherence_clauses, {
+                        Literal(dir_var, false),
+                        Literal(out_var, true)
+                    });
+                }
+
+                // Source must not be empty
                 add_clause_to(source_sink_clauses, {
-                    Literal(__in_lit_str(src_i, src_j, d), false)
+                    Literal(__dir_lit_str(src_i, src_j, EMPTY_DIR), false)
                 });
+                
+                // Source must have exactly one outgoing direction (ALO)
+                Clause out_alo;
+                for (int d = 1; d <= 4; d++) {
+                    out_alo.addLiteral(Literal(__out_lit_str(src_i, src_j, d), true));
+                }
+                source_sink_clauses.push_back(out_alo);
+                
+                // Source must have no incoming directions
+                for (int d = 1; d <= 4; d++) {
+                    add_clause_to(source_sink_clauses, {
+                        Literal(__in_lit_str(src_i, src_j, d), false)
+                    });
+                }
+                
+                // Source must have a direction (ALO on directions)
+                Clause dir_alo;
+                for (int d = 1; d <= 4; d++) {
+                    dir_alo.addLiteral(Literal(__dir_lit_str(src_i, src_j, d), true));
+                }
+                source_sink_clauses.push_back(dir_alo);
             }
-            
-            // Source must have a direction (ALO on directions)
-            Clause dir_alo;
-            for (int d = 1; d <= 4; d++) {
-                dir_alo.addLiteral(Literal(__dir_lit_str(src_i, src_j, d), true));
-            }
-            source_sink_clauses.push_back(dir_alo);
-        }
         
-        // Handle sinks  
-        for (auto &sink : sinks) {
-            int sink_i = sink.first;    // row
-            int sink_j = sink.second;   // col
-            
-            // Sink must not be empty
-            add_clause_to(source_sink_clauses, {
-                Literal(__dir_lit_str(sink_i, sink_j, EMPTY_DIR), false)
-            });
-            
-            // Sink must have exactly one incoming direction (ALO)
-            Clause in_alo;
-            for (int d = 1; d <= 4; d++) {
-                in_alo.addLiteral(Literal(__in_lit_str(sink_i, sink_j, d), true));
-            }
-            source_sink_clauses.push_back(in_alo);
-            
-            // Sink must have no outgoing directions
-            for (int d = 1; d <= 4; d++) {
+            // Handle sinks  
+            for (auto &sink : sinks) {
+                int sink_i = sink.first;    // row
+                int sink_j = sink.second;   // col
+                
+                // Sink must not be empty
                 add_clause_to(source_sink_clauses, {
-                    Literal(__out_lit_str(sink_i, sink_j, d), false)
+                    Literal(__dir_lit_str(sink_i, sink_j, EMPTY_DIR), false)
                 });
+                
+                // Sink must have exactly one incoming direction (ALO)
+                Clause in_alo;
+                for (int d = 1; d <= 4; d++) {
+                    in_alo.addLiteral(Literal(__in_lit_str(sink_i, sink_j, d), true));
+                }
+                source_sink_clauses.push_back(in_alo);
+                
+                // Sink must have no outgoing directions
+                for (int d = 1; d <= 4; d++) {
+                    add_clause_to(source_sink_clauses, {
+                        Literal(__out_lit_str(sink_i, sink_j, d), false)
+                    });
+                }
+                
+                // Sink must have a direction (ALO on directions)  
+                Clause dir_alo;
+                for (int d = 1; d <= 4; d++) {
+                    dir_alo.addLiteral(Literal(__dir_lit_str(sink_i, sink_j, d), true));
+                }
+                source_sink_clauses.push_back(dir_alo);
             }
-            
-            // Sink must have a direction (ALO on directions)  
-            Clause dir_alo;
-            for (int d = 1; d <= 4; d++) {
-                dir_alo.addLiteral(Literal(__dir_lit_str(sink_i, sink_j, d), true));
-            }
-            source_sink_clauses.push_back(dir_alo);
         }
-    }
 
         // ============================ Reachability and Turn Limit Constraints ============================
         
@@ -798,6 +819,9 @@ class SATEncoder {
                                         Literal(turn_var, false)
                                     });
                                 } else {
+
+                                    if(d1 == d2) continue; // Skip same direction pairs
+
                                     // Non-straight: force turn
                                     add_clause_to(turn_limit_clauses, {
                                         Literal(reach_var, false),
