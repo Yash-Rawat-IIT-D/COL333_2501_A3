@@ -913,11 +913,54 @@ class SATEncoder {
 
          // Output methods (add these back)
         void outputDIMACS(const string &filename) {
-            // TODO: Implement DIMACS output
+            ofstream out(filename, ios::out | ios::trunc);
+            if (!out.is_open()) {
+                cerr << "Error: Cannot open CNF output file: " << filename << endl;
+                return;
+            }
+
+            // Write DIMACS header
+            out << "p cnf " << var_count << " " << clauses.size() << '\n';
+
+            // Emit clauses
+            for (const auto &cl : clauses) {
+                // Skip empty clauses if any (though none expected)
+                if (cl.isEmpty()) {
+                    out << 0 << '\n';
+                    continue;
+                }
+                for (const auto &lit : cl.literals) {
+                    auto it = literal_var_map.find(lit.getName());
+                    if (it == literal_var_map.end()) {
+                        // Fallback: assign an id if somehow missing
+                        // (should not happen with proper tracking during encode)
+                        track_literal(lit.getName());
+                        it = literal_var_map.find(lit.getName());
+                    }
+                    int v = it->second;
+                    out << (lit.isPositive() ? v : -v) << ' ';
+                }
+                out << 0 << '\n';
+            }
+
+            out.close();
         }
 
         void outputVariableMapping(const string &filename) {
-            // TODO: Implement variable mapping output  
+            ofstream out(filename, ios::out | ios::trunc);
+            if (!out.is_open()) {
+                cerr << "Error: Cannot open mapping output file: " << filename << endl;
+                return;
+            }
+
+            // Emit mappings in variable-id order for fast decoder lookup
+            // literal_names is stored in creation order where index = id-1
+            for (int id = 1; id <= var_count; ++id) {
+                const string &name = literal_names[id - 1];
+                out << id << ' ' << name << '\n';
+            }
+
+            out.close();
         }
 
         // Get clause count for debugging
