@@ -52,7 +52,6 @@ string __sinz_lit_str(int i, int j, int d) {
 }
 
 // Helper function to create reachability literal for line k at cell (i, j)
-
 string __reach_lit_str(int i, int j, int k) {
     ostringstream ss;
     ss << "R_" << i << "_" << j << "_" << k;
@@ -353,10 +352,19 @@ class SATEncoder {
                 // ALO on Out*: (OutR ∨ OutU ∨ OutL ∨ OutD)
                 { Clause c; for (auto &s : OUTs) c.addLiteral(Literal(s, true)); directionality_clauses.push_back(c); }
 
-                // Efficient Sinz AMO on Out* instead of pairwise
-                vector<Literal> out_lits;
-                for (auto &s : OUTs) out_lits.push_back(Literal(s, true));
-                amo_sinz_occ(i, j, out_lits);
+                // // Efficient Sinz AMO on Out* instead of pairwise
+                // vector<Literal> out_lits;
+                // for (auto &s : OUTs) out_lits.push_back(Literal(s, true));
+                // amo_sinz_occ(i, j, out_lits);
+                // Pairwise AMO on Out*
+                for (int a = 0; a < (int)OUTs.size(); ++a){
+                    for (int b = a+1; b < (int)OUTs.size(); ++b) {
+                        Clause c; 
+                        c.addLiteral(Literal(OUTs[a], false));
+                        c.addLiteral(Literal(OUTs[b], false));
+                        directionality_clauses.push_back(c);
+                    }
+                }
 
                 // Forbid all In*
                 for (auto &s : INs) { Clause c; c.addLiteral(Literal(s, false)); directionality_clauses.push_back(c); }
@@ -368,10 +376,14 @@ class SATEncoder {
                 // ALO on In*
                 { Clause c; for (auto &s : INs) c.addLiteral(Literal(s, true)); directionality_clauses.push_back(c); }
 
-                // Efficient Sinz AMO on In* instead of pairwise
-                vector<Literal> in_lits;
-                for (auto &s : INs) in_lits.push_back(Literal(s, true));
-                amo_sinz_occ(i, j, in_lits);
+                // Pairwise AMO on In*
+                for (int a = 0; a < (int)INs.size(); ++a){
+                    for (int b = a+1; b < (int)INs.size(); ++b) {
+                        Clause c; c.addLiteral(Literal(INs[a], false));
+                                c.addLiteral(Literal(INs[b], false));
+                        directionality_clauses.push_back(c);
+                    }
+                }
                 // Forbid all Out*
                 for (auto &s : OUTs) { Clause c; c.addLiteral(Literal(s, false)); directionality_clauses.push_back(c); }
             }
@@ -409,7 +421,6 @@ class SATEncoder {
         //  Tie for non-sink cells: (¬X(u) ∨ R(u))
         void encodeReachability() {
             for (int k = 0; k < K; ++k) {
-                // (x,y) stored as (col,row); we use (i=row, j=col)
                 auto &S = metro_map.getLineStarts(k);
                 auto &E = metro_map.getLineEnds(k);
                 int src_i  = S[0].second, src_j  = S[0].first;
@@ -420,9 +431,7 @@ class SATEncoder {
                     string Rsrc  = __reach_lit_str(src_i,  src_j,  k);
                     string Rsink = __reach_lit_str(sink_i, sink_j, k);
                     track_literal(Rsrc);
-                    track_literal(Rsink);
                     { Clause c; c.addLiteral(Literal(Rsrc,  true)); reachability_clauses.push_back(c); }
-                    { Clause c; c.addLiteral(Literal(Rsink, true)); reachability_clauses.push_back(c); }
                 }
 
                 // Per cell: structural constraints + Horn rules
@@ -437,12 +446,27 @@ class SATEncoder {
 
                         // Tie occupancy to reachability for NON-SINK cells:
                         // (¬X(i,j,k) ∨ R(i,j,k))
-                        if (!(i == sink_i && j == sink_j)) {
-                            Clause c;
-                            c.addLiteral(Literal(__occ_lit_str(i, j, k), false));
-                            c.addLiteral(Literal(__reach_lit_str(i, j, k), true));
-                            reachability_clauses.push_back(c);
+                        // if (!(i == sink_i && j == sink_j)) {
+                        //     Clause c;
+                        //     c.addLiteral(Literal(__occ_lit_str(i, j, k), false));
+                        //     c.addLiteral(Literal(__reach_lit_str(i, j, k), true));
+                        //     reachability_clauses.push_back(c);
+                        // }
+
+                        // Clause c;
+                        // c.addLiteral(Literal(__occ_lit_str(i, j, k), false));
+                        // c.addLiteral(Literal(__reach_lit_str(i, j, k), true));
+                        // reachability_clauses.push_back(c);
+
+                        // ADD this instead:
+                        // (¬R(i,j,k) ∨ X(i,j,k))  i.e., R ⇒ X
+                        {
+                            Clause c2;
+                            c2.addLiteral(Literal(__reach_lit_str(i, j, k), false)); // ¬R
+                            c2.addLiteral(Literal(__occ_lit_str(i, j, k), true));    //  X
+                            reachability_clauses.push_back(c2);
                         }
+
 
                         // Forward Horn propagation:
                         // (¬R(i,j,k) ∨ ¬Out(i,j,k,dir) ∨ R(ni,nj,k))
@@ -463,6 +487,15 @@ class SATEncoder {
                             c.addLiteral(Literal(__out_lit_str(i, j, k, dir), false)); // ¬Out(u→v)
                             c.addLiteral(Literal(__reach_lit_str(ni, nj, k), true));   // R(v)
                             reachability_clauses.push_back(c);
+
+                            // Out(u->v) ⇒ ¬Out(v->u)   to forbid 2-cycles
+                            {
+                                Clause cyc;
+                                cyc.addLiteral(Literal(__out_lit_str(i, j, k, dir), false)); // ¬Out(u->v)
+                                cyc.addLiteral(Literal(__out_lit_str(ni, nj, k, getOppositeDirIndex(dir)), false)); // ¬Out(v->u)
+                                reachability_clauses.push_back(cyc);
+                            }
+
                         }
                     }
                 }

@@ -113,6 +113,14 @@ string __reach_lit_str(int i, int j, int k) {
     return ss.str();
 }
 
+// Helper vars for "any IN/OUT" at a cell
+string __in_any_str(int i, int j) {
+    ostringstream ss; ss << "IANY_" << i << "_" << j; return ss.str();
+}
+string __out_any_str(int i, int j) {
+    ostringstream ss; ss << "OANY_" << i << "_" << j; return ss.str();
+}
+
 // Helper function to create turn counting string literal for line k at cell (i, j) with t turns used
 string __turn_lit_str(int i, int j, int k) {
     ostringstream ss;
@@ -285,6 +293,13 @@ class SATEncoder {
                 for (int j = 0; j < N; j++) {
                     // Apply AMO constraint on the 5 direction variables
                     amo_sinz_directions(i, j);
+
+                    // Boundary guards: forbid DIR that would move out of bounds
+                    for (int d = 1; d <= 4; ++d) {
+                        if (out_of_bounds(i, j, d)) {
+                            add_clause_to(direction_clauses, { Literal(__dir_lit_str(i, j, d), false) });
+                        }
+                    }
                 }
             }
         }
@@ -355,13 +370,13 @@ class SATEncoder {
         // Helper to add no U-turn constraints for a cell
         void add_no_uturn_constraints(int i, int j) {
             for (int d = 1; d <= 4; d++) {
-                // ¬(IN_i_j_d ∧ OUT_i_j_d) ≡ (¬IN_i_j_d ∨ ¬OUT_i_j_d)
+                // Forbid U-turn: entering from d and leaving back to d
+                // ¬(IN(i,j,d) ∧ OUT(i,j,d)) ≡ (¬IN(i,j,d) ∨ ¬OUT(i,j,d))
                 string in_var = __in_lit_str(i, j, d);
                 string out_var = __out_lit_str(i, j, d);
-                
                 add_clause_to(flow_clauses, {
-                    Literal(in_var, false),   // ¬IN_i_j_d
-                    Literal(out_var, false)   // ¬OUT_i_j_d
+                    Literal(in_var, false),
+                    Literal(out_var, false)
                 });
             }
         }
@@ -369,6 +384,13 @@ class SATEncoder {
         void encodeFlowConstraints() {
             for (int i = 0; i < M; i++) {
                 for (int j = 0; j < N; j++) {
+                    // Boundary guards: forbid OUT/IN that would move out of bounds
+                    for (int d = 1; d <= 4; ++d) {
+                        if (out_of_bounds(i, j, d)) {
+                            add_clause_to(flow_clauses, { Literal(__out_lit_str(i, j, d), false) });
+                            add_clause_to(flow_clauses, { Literal(__in_lit_str(i, j, d),  false) });
+                        }
+                    }
                     // 1. In-degree ≤ 1: AMO on incoming directions
                     amo_sinz_in_directions(i, j);
                     
@@ -377,6 +399,35 @@ class SATEncoder {
                     
                     // 3. No U-turns: ¬(IN_i_j_d ∧ OUT_i_j_d) for all d
                     add_no_uturn_constraints(i, j);
+                }
+            }
+        }
+
+        // Define IANY(i,j) ↔ (∨d IN(i,j,d)) and OANY(i,j) ↔ (∨d OUT(i,j,d)) once per cell
+        void encodeAnyInOut() {
+            for (int i = 0; i < M; ++i) {
+                for (int j = 0; j < N; ++j) {
+                    string IANY = __in_any_str(i, j);
+                    string OANY = __out_any_str(i, j);
+                    add_literal(IANY);
+                    add_literal(OANY);
+
+                    // (⇐) IN(d) ⇒ IANY  and  OUT(d) ⇒ OANY
+                    for (int d = 1; d <= 4; ++d) {
+                        add_clause_to(flow_clauses, { Literal(__in_lit_str(i, j, d), false),  Literal(IANY, true) });
+                        add_clause_to(flow_clauses, { Literal(__out_lit_str(i, j, d), false), Literal(OANY, true) });
+                    }
+                    // (⇒) IANY ⇒ ∨ IN(d)  and  OANY ⇒ ∨ OUT(d)
+                    {
+                        Clause c; c.addLiteral(Literal(IANY, false));
+                        for (int d = 1; d <= 4; ++d) c.addLiteral(Literal(__in_lit_str(i, j, d), true));
+                        flow_clauses.push_back(c);
+                    }
+                    {
+                        Clause c; c.addLiteral(Literal(OANY, false));
+                        for (int d = 1; d <= 4; ++d) c.addLiteral(Literal(__out_lit_str(i, j, d), true));
+                        flow_clauses.push_back(c);
+                    }
                 }
             }
         }
@@ -609,6 +660,23 @@ class SATEncoder {
         void encodeReachability() {
             // Create reachability variables and encode constraints
             
+            // Precompute source positions per line for quick checks
+            vector<unordered_set<long long>> src_pos(K);
+            vector<unordered_set<long long>> sink_pos(K);
+            auto key = [&](int i, int j){ return (static_cast<long long>(i) << 32) ^ static_cast<unsigned long long>(j); };
+            for (int k = 0; k < K; ++k) {
+                auto &starts = metro_map.getLineStarts(k);
+                for (auto &st : starts) {
+                    int sj = st.first; int si = st.second;
+                    src_pos[k].insert(key(si, sj));
+                }
+                auto &ends = metro_map.getLineEnds(k);
+                for (auto &en : ends) {
+                    int ej = en.first; int ei = en.second;
+                    sink_pos[k].insert(key(ei, ej));
+                }
+            }
+
             // 1. Source Seeding: R(src_i, src_j, k) = TRUE
             for (int k = 0; k < K; k++) {
                 auto& starts = metro_map.getLineStarts(k);
@@ -630,18 +698,13 @@ class SATEncoder {
             // 2. Sink Assertion: R(sink_i, sink_j, k) = TRUE
             for (int k = 0; k < K; k++) {
                 auto& ends = metro_map.getLineEnds(k);
-                
                 for (auto& end : ends) {
                     int sink_j = end.first;    // column
                     int sink_i = end.second;   // row
-                    
                     string reach_var = __reach_lit_str(sink_i, sink_j, k);
                     add_literal(reach_var);
-                    
                     // Unit clause: R(sink_i, sink_j, k) = TRUE
-                    add_clause_to(reachability_clauses, {
-                        Literal(reach_var, true)
-                    });
+                    add_clause_to(reachability_clauses, { Literal(reach_var, true) });
                 }
             }
             
@@ -673,6 +736,61 @@ class SATEncoder {
                                 Literal(reach_neighbor, true)     // R(ni,nj,k)
                             });
                         }
+
+                        // 4. Backward bridging on used edges:
+                        // OUT(i,j,d) ∧ R(ni,nj,k) → R(i,j,k)
+                        // CNF: ¬R(ni,nj,k) ∨ ¬OUT(i,j,d) ∨ R(i,j,k)
+                        for (int d = 1; d <= 4; ++d) {
+                            if (out_of_bounds(i, j, d)) continue;
+                            int ni, nj; getNeighbor(i, j, d, ni, nj);
+                            string reach_next = __reach_lit_str(ni, nj, k);
+                            string out_here   = __out_lit_str(i, j, d);
+                            add_literal(reach_next);
+                            add_literal(out_here);
+                            add_clause_to(reachability_clauses, {
+                                Literal(reach_next, false),
+                                Literal(out_here,   false),
+                                Literal(reach_current, true)
+                            });
+                        }
+
+                        // 5. Predecessor support: if R(i,j,k) and a predecessor uses OUT(pi,pj,d) into (i,j), then R(pi,pj,k)
+                        for (int d = 1; d <= 4; ++d) {
+                            int opp = getOppositeDir(d);
+                            int pi, pj; getNeighbor(i, j, opp, pi, pj);
+                            if (pi < 0 || pi >= M || pj < 0 || pj >= N) continue;
+                            add_clause_to(reachability_clauses, {
+                                Literal(reach_current, false),
+                                Literal(__reach_lit_str(pi, pj, k), true),
+                                Literal(__out_lit_str(pi, pj, d), false)
+                            });
+                        }
+
+                        // 6. At least one predecessor OUT for reachable non-source cells:
+                        // R(i,j,k) ⇒ (∨_d OUT(pi,pj,d)) over valid predecessors
+                        if (src_pos[k].find(key(i,j)) == src_pos[k].end()) {
+                            Clause at_least_one_pred_out;
+                            at_least_one_pred_out.addLiteral(Literal(reach_current, false));
+                            for (int d = 1; d <= 4; ++d) {
+                                int opp = getOppositeDir(d);
+                                int pi, pj; getNeighbor(i, j, opp, pi, pj);
+                                if (pi < 0 || pi >= M || pj < 0 || pj >= N) continue;
+                                at_least_one_pred_out.addLiteral(Literal(__out_lit_str(pi, pj, d), true));
+                            }
+                            // Only add if there is at least one valid predecessor
+                            if (!at_least_one_pred_out.isEmpty()) reachability_clauses.push_back(at_least_one_pred_out);
+                        }
+
+                        // 7. Ensure interior reachable cells have IN and OUT via helper ANY vars (endpoints exempt)
+                        bool is_src = (src_pos[k].find(key(i,j)) != src_pos[k].end());
+                        bool is_sink = (sink_pos[k].find(key(i,j)) != sink_pos[k].end());
+
+                        if (!is_src) {
+                            add_clause_to(reachability_clauses, { Literal(reach_current, false), Literal(__in_any_str(i, j), true) });
+                        }
+                        if (!is_sink) {
+                            add_clause_to(reachability_clauses, { Literal(reach_current, false), Literal(__out_any_str(i, j), true) });
+                        }
                     }
                 }
             }
@@ -692,14 +810,15 @@ class SATEncoder {
             }
             
             // Create auxiliary variables s_{i,j} for i=0..n-1, j=0..max_count-1
-            // Note: Converting from 1-based (paper) to 0-based (code)
-            vector<vector<Literal>> s(n, vector<Literal>(max_count));
-            
+            // Avoid default-constructing Literals (no default ctor): build explicitly
+            vector<vector<Literal>> s;
+            s.resize(n);
             for (int i = 0; i < n; i++) {
+                s[i].reserve(max_count);
                 for (int j = 0; j < max_count; j++) {
                     string aux_name = __turn_seq_name(line_k, i, j);
                     track_literal(aux_name);
-                    s[i][j] = Literal(aux_name, true);
+                    s[i].push_back(Literal(aux_name, true));
                 }
             }
             
@@ -892,7 +1011,8 @@ class SATEncoder {
             classify_source_sink(sources, sinks, normals);
 
             encodeDirectionConstraints();
-            encodeFlowConstraints(); 
+            encodeFlowConstraints();
+            encodeAnyInOut(); 
             encodePathCoherence(normals);  // Pass normal cells only
             encodeSourceSinkConstraints(sources, sinks);  // Pass classified source/sink cells
             encodeReachability();
