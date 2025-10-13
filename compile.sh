@@ -9,12 +9,13 @@ echo "[1/6] Cleaning old binaries…"
 rm -f encoder decoder
 
 echo "[2/6] Building encoder…"
-g++ -std=c++11 -O2 -I src -o encoder src/encoder.cpp
-# g++ -std=c++11 -O2 -I src -o encoder src/newenc.cpp
+# uncomment this for old encoder and decoder
+# g++ -std=c++11 -O2 -I src -o encoder src/encoder.cpp
+g++ -std=c++11 -O2 -I src -o encoder src/newenc.cpp
 
 echo "[3/6] Building decoder…"
-g++ -std=c++11 -O2 -I src -o decoder src/decoder.cpp
-# g++ -std=c++11 -O2 -I src -o decoder src/newdec.cpp
+# g++ -std=c++11 -O2 -I src -o decoder src/decoder.cpp
+g++ -std=c++11 -O2 -I src -o decoder src/newdec.cpp
 
 echo "[4/6] Running run1 on ${TARGET}…"
 ./run1.sh "$TARGET"
