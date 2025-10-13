@@ -231,6 +231,12 @@ class MetroMap {
             }
             return line_path[i];
         }
+        int getPopularCitiesCount() { return pop_cities_sz; }
+
+        vector<vector<pair<int,int>>>& getPopularCities() {
+            return popular_cities;
+        }
+
 };      
 
 MetroMap parseInputFile(ifstream &input_file_stream) {

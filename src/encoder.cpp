@@ -71,27 +71,6 @@ string  __in_lit_str(int i, int j, int k, int dir) {
     return ss.str();
 }
 
-
-// Per-cell per-line rank (level) literal: O_(i,j,k,t) means
-// "cell (i,j) of line k has rank ≥ t"
-string __ord_lit_str(int i, int j, int k, int t) {
-    ostringstream ss;
-    ss << "O_" << i << "_" << j << "_" << k << "_" << t;
-    return ss.str();
-}
-
-string __rank_bit_lit_str(int i, int j, int k, int b) {
-    ostringstream ss; ss << "RB_" << i << "_" << j << "_" << k << "_" << b; return ss.str();
-}
-
-string __eqpref_lit_str(int i, int j, int k, int dir, int p) {
-    ostringstream ss; ss << "EQP_" << i << "_" << j << "_" << k << "_" << dir << "_" << p; return ss.str();
-}
-
-string __ltw_lit_str(int i, int j, int k, int dir, int p) {
-    ostringstream ss; ss << "LTW_" << i << "_" << j << "_" << k << "_" << dir << "_" << p; return ss.str();
-}
-
 // string helper methods for turn limit encoding can be added here
 
 string __turn_lit_str(int i, int j, int k) {
@@ -155,6 +134,7 @@ class SATEncoder {
         vector<Clause> reachability_clauses;
         vector<Clause> turn_clauses;
         vector<Clause> clauses;
+        vector<Clause> popular_clauses;
         
         void add_literal(const string &name) {
             // Bypass expensive map checks if known to be new
@@ -356,6 +336,16 @@ class SATEncoder {
             bool is_source = (i == src_i && j == src_j);
             bool is_sink   = (i == sink_i && j == sink_j);
 
+            if (is_source && is_sink) {
+                { Clause c; c.addLiteral(Literal(Xij, true)); directionality_clauses.push_back(c); }
+                for (int d = 1; d <= 4; ++d) if (!out_of_bounds(i,j,d)) {
+                    { Clause c; c.addLiteral(Literal(__out_lit_str(i,j,k,d), false)); directionality_clauses.push_back(c); }
+                    { Clause c; c.addLiteral(Literal(__in_lit_str(i,j,k,d),  false)); directionality_clauses.push_back(c); }
+                }
+                // Optional: also forbid a "turn" at a 0-length line cell
+                { Clause c; c.addLiteral(Literal(__turn_lit_str(i,j,k), false)); turn_clauses.push_back(c); }
+                return;
+            }
             if (is_source) {
                 // Force occupied
                 { Clause c; c.addLiteral(Literal(Xij, true)); directionality_clauses.push_back(c); }
@@ -363,14 +353,10 @@ class SATEncoder {
                 // ALO on Out*: (OutR ∨ OutU ∨ OutL ∨ OutD)
                 { Clause c; for (auto &s : OUTs) c.addLiteral(Literal(s, true)); directionality_clauses.push_back(c); }
 
-                // Pairwise AMO on Out*
-                for (int a = 0; a < (int)OUTs.size(); ++a){
-                    for (int b = a+1; b < (int)OUTs.size(); ++b) {
-                        Clause c; c.addLiteral(Literal(OUTs[a], false));
-                                c.addLiteral(Literal(OUTs[b], false));
-                        directionality_clauses.push_back(c);
-                    }
-                }
+                // Efficient Sinz AMO on Out* instead of pairwise
+                vector<Literal> out_lits;
+                for (auto &s : OUTs) out_lits.push_back(Literal(s, true));
+                amo_sinz_occ(i, j, out_lits);
 
                 // Forbid all In*
                 for (auto &s : INs) { Clause c; c.addLiteral(Literal(s, false)); directionality_clauses.push_back(c); }
@@ -382,14 +368,10 @@ class SATEncoder {
                 // ALO on In*
                 { Clause c; for (auto &s : INs) c.addLiteral(Literal(s, true)); directionality_clauses.push_back(c); }
 
-                // Pairwise AMO on In*
-                for (int a = 0; a < (int)INs.size(); ++a){
-                    for (int b = a+1; b < (int)INs.size(); ++b) {
-                        Clause c; c.addLiteral(Literal(INs[a], false));
-                                c.addLiteral(Literal(INs[b], false));
-                        directionality_clauses.push_back(c);
-                    }
-                }
+                // Efficient Sinz AMO on In* instead of pairwise
+                vector<Literal> in_lits;
+                for (auto &s : INs) in_lits.push_back(Literal(s, true));
+                amo_sinz_occ(i, j, in_lits);
                 // Forbid all Out*
                 for (auto &s : OUTs) { Clause c; c.addLiteral(Literal(s, false)); directionality_clauses.push_back(c); }
             }
@@ -422,16 +404,9 @@ class SATEncoder {
 
 
         // Builds ONLY direction/degree/neighbor-coherence constraints.
-        // No R(*), no witnesses. Occupancy AMO is handled in encodeOccupancy().
-        // Acyclicity will be added separately in encodeAcyclicity().
         // Builds direction/degree/neighbor-coherence (via local_constraints)
-        // + Horn reachability:
-        //
-        //  Seed: R(src) = true
-        //  Seed: R(sink) = true
         //  Forward Horn: (¬R(u) ∨ ¬Out(u→v) ∨ R(v))
         //  Tie for non-sink cells: (¬X(u) ∨ R(u))
-        //
         void encodeReachability() {
             for (int k = 0; k < K; ++k) {
                 // (x,y) stored as (col,row); we use (i=row, j=col)
@@ -494,94 +469,6 @@ class SATEncoder {
             }
         }
 
-        int numRankBits() const {
-            long long T = 1LL * M * N;   // upper bound on path length
-            int B = 0; while ((1LL << B) <= T) ++B;
-            return max(1, B);
-        }
-
-        // For every used edge Out(u->v), enforce rank(u) < rank(v) in binary.
-        // This forbids all directed cycles.
-        void encodeAcyclicityBinary() {
-            const int B = numRankBits();
-
-            auto RB  = [&](int i,int j,int k,int b){ return __rank_bit_lit_str(i,j,k,b); };
-            auto EQP = [&](int i,int j,int k,int d,int p){ return __eqpref_lit_str(i,j,k,d,p); };
-            auto LTW = [&](int i,int j,int k,int d,int p){ return __ltw_lit_str(i,j,k,d,p); };
-
-            for (int k = 0; k < K; ++k) {
-                // Declare rank bits for all cells of line k (guarded later by edges)
-                for (int i = 0; i < M; ++i) for (int j = 0; j < N; ++j)
-                    for (int b = 0; b < B; ++b) track_literal(RB(i,j,k,b));
-
-                // For each directed in-bounds edge u=(i,j) -> v
-                for (int i = 0; i < M; ++i) for (int j = 0; j < N; ++j) {
-                    for (int dir = 1; dir <= 4; ++dir) {
-                        if (out_of_bounds(i,j,dir)) continue;
-
-                        int ni=i, nj=j;
-                        if (dir==RIGHT) nj++; else if (dir==UP) ni--; else if (dir==LEFT) nj--; else ni++;
-                        string OUT = __out_lit_str(i,j,k,dir);
-                        track_literal(OUT);
-
-                        // EqPref seed and chain: EqPref(B-1)=true, then push down
-                        for (int p = 0; p < B; ++p) track_literal(EQP(i,j,k,dir,p));
-                        { Clause c; c.addLiteral(Literal(EQP(i,j,k,dir,B-1), true));
-                        reachability_clauses.push_back(c); }
-
-                        for (int p = B-1; p >= 1; --p) {
-                            string eqp   = EQP(i,j,k,dir,p);
-                            string eqpm1 = EQP(i,j,k,dir,p-1);
-                            string au    = RB(i,j,k,p);
-                            string bv    = RB(ni,nj,k,p);
-
-                            // eqpm1 => eqp
-                            { Clause c; c.addLiteral(Literal(eqpm1, false));
-                                        c.addLiteral(Literal(eqp,   true)); reachability_clauses.push_back(c); }
-                            // eqpm1 => (au <-> bv)
-                            { Clause c; c.addLiteral(Literal(eqpm1, false));
-                                        c.addLiteral(Literal(au,    true));
-                                        c.addLiteral(Literal(bv,    false)); reachability_clauses.push_back(c); }
-                            { Clause c; c.addLiteral(Literal(eqpm1, false));
-                                        c.addLiteral(Literal(au,    false));
-                                        c.addLiteral(Literal(bv,    true));  reachability_clauses.push_back(c); }
-                            // (eqp & au==bv) => eqpm1
-                            { Clause c; c.addLiteral(Literal(eqp,  false));
-                                        c.addLiteral(Literal(au,    false));
-                                        c.addLiteral(Literal(bv,    false));
-                                        c.addLiteral(Literal(eqpm1, true));  reachability_clauses.push_back(c); }
-                            { Clause c; c.addLiteral(Literal(eqp,  false));
-                                        c.addLiteral(Literal(au,    true));
-                                        c.addLiteral(Literal(bv,    true));
-                                        c.addLiteral(Literal(eqpm1, true));  reachability_clauses.push_back(c); }
-                        }
-
-                        // LTW(p) <-> EqPref(p) & ~a_p & b_p  (witness that first differing bit makes u<v)
-                        for (int p = B-1; p >= 0; --p) {
-                            string eqp = EQP(i,j,k,dir,p);
-                            string ap  = RB(i,j,k,p);
-                            string bp  = RB(ni,nj,k,p);
-                            string wp  = LTW(i,j,k,dir,p);
-                            track_literal(wp);
-                            { Clause c; c.addLiteral(Literal(wp, false)); c.addLiteral(Literal(eqp, true)); reachability_clauses.push_back(c); }
-                            { Clause c; c.addLiteral(Literal(wp, false)); c.addLiteral(Literal(ap,  false));reachability_clauses.push_back(c); }
-                            { Clause c; c.addLiteral(Literal(wp, false)); c.addLiteral(Literal(bp,  true ));reachability_clauses.push_back(c); }
-                            { Clause c; c.addLiteral(Literal(eqp, false));
-                                        c.addLiteral(Literal(ap,   true ));
-                                        c.addLiteral(Literal(bp,   false));
-                                        c.addLiteral(Literal(wp,   true )); reachability_clauses.push_back(c); }
-                        }
-
-                        // Out(u->v) => OR_p LTW(p)
-                        { Clause c; c.addLiteral(Literal(OUT, false));
-                                    for (int p = B-1; p >= 0; --p)
-                                        c.addLiteral(Literal(LTW(i,j,k,dir,p), true));
-                        reachability_clauses.push_back(c); }
-                    }
-                }
-            }
-        }
-
 
         // Helper methods for encoding turn limit constraints
 
@@ -591,13 +478,16 @@ class SATEncoder {
             string Tij = __turn_lit_str(i, j, k); track_literal(Tij);
             string Xij = __occ_lit_str(i, j, k); track_literal(Xij);
 
-            vector<int> dirs; for(int d = 1; d <= 4; d++) if(!out_of_bounds(i,j,d)) dirs.push_back(d);
+            // for(int d = 1; d <= 4; d++) if(!out_of_bounds(i,j,d)) dirs.push_back(d);
 
-            vector<int> in_dirs, out_dirs; // Valid incoming and outgoing directions
-            for(int d : dirs) {
-                if(!out_of_bound_rev(i,j,d)) in_dirs.push_back(d);
-                if(!out_of_bounds(i,j,d)) out_dirs.push_back(d);
-            } 
+            vector<int> in_dirs, out_dirs;
+            for (int d = 1; d <= 4; ++d) {
+                if (!out_of_bounds(i, j, d)) {   // neighbor exists in direction d
+                    in_dirs.push_back(d);
+                    out_dirs.push_back(d);
+                }
+            }
+
 
             // Build IN/OUT name lists (only in-bounds dirs)
             vector<string> INs, OUTs;
@@ -647,8 +537,9 @@ class SATEncoder {
                 // All must be false 
                 for (auto &x : Tks) {
                     Clause c; c.addLiteral(Literal(x, false)); turn_clauses.push_back(c);
-                    return;
+                    // return;
                 }
+                return;
             }
 
             vector<vector<string>> S_lit_str (n+1, vector<string>(J+1));
@@ -727,19 +618,42 @@ class SATEncoder {
             }
         }
 
+        void encodePopularCities() {
+            int P = metro_map.getPopularCitiesCount();
+            if (P <= 0) return;
+
+            auto &PC = metro_map.getPopularCities(); // vector<vector<pair<int,int>>>
+
+            for (int p = 0; p < P; ++p) {
+                if (PC[p].empty()) continue;
+                int j = PC[p][0].first;   // x = col
+                int i = PC[p][0].second;  // y = row
+
+                // ALO over lines: X(i,j,0) ∨ X(i,j,1) ∨ ... ∨ X(i,j,K-1)
+                Clause c;
+                for (int k = 0; k < K; ++k) {
+                    string Xij = __occ_lit_str(i, j, k);
+                    track_literal(Xij);
+                    c.addLiteral(Literal(Xij, true));
+                }
+                // If K>0, c won't be empty. Still, be safe:
+                if (!c.isEmpty()) popular_clauses.push_back(c);
+            }
+        }
 
         // Top level function to encode the problem into CNF
         void encode() {
             encodeOccupancy();
             encodeReachability();
-            // encodeTurnLimit();
-            encodeAcyclicityBinary();
+            encodeTurnLimit();
+            encodePopularCities();
 
             // Combine all clauses
             clauses.insert(clauses.end(), occupancy_clauses.begin(), occupancy_clauses.end());
             clauses.insert(clauses.end(), reachability_clauses.begin(), reachability_clauses.end());
             clauses.insert(clauses.end(), directionality_clauses.begin(), directionality_clauses.end());
             clauses.insert(clauses.end(), turn_clauses.begin(), turn_clauses.end());
+            clauses.insert(clauses.end(), popular_clauses.begin(), popular_clauses.end());
         }
 
         // Output CNF in DIMACS format

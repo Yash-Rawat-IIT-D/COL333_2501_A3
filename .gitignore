@@ -2,3 +2,8 @@
 .vscode/
 A3.pdf
 testing.cpp
+# *.city
+# *.cnf
+# *.map
+# *.metromap
+# *.sat
