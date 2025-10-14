@@ -317,6 +317,9 @@ class SATEncoder {
                 if (!neigh_is_sink) {
                     { Clause c; c.addLiteral(Literal(in_id, false)); c.addLiteral(Literal(neigh_occ_id, true)); addClause(c); }
                 }
+
+                // Forbid entering and leaving through the same port.
+                { Clause c; c.addLiteral(Literal(in_id, false)); c.addLiteral(Literal(out_id, false)); addClause(c); }
             }
 
             string turn_name = __turn_lit_str(i, j, k);
@@ -654,4 +657,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-

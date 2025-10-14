@@ -40,7 +40,8 @@ dbg_main2: $(SRC_MAIN2)
 	$(CXX) $(CXXFLAGS) $(CXXFLAGS_DBG) -o $(DBG_MAIN2) $(SRC_MAIN2)
 
 clean:
-	rm -f $(TARGET_MAIN1) $(TARGET_MAIN2)
-	rm -f $(DBG_MAIN1) $(DBG_MAIN2)
-	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(RELEASE_DIR)
-	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(DBG_DIR)
+# 	rm -f $(TARGET_MAIN1) $(TARGET_MAIN2)
+# 	rm -f $(DBG_MAIN1) $(DBG_MAIN2)
+# 	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(RELEASE_DIR)
+# 	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(DBG_DIR)
+	rm input/*.satinput input/*.satoutput input/*.satinput.map input/*.metromap
