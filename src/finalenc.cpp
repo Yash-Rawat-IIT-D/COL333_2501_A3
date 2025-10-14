@@ -63,6 +63,11 @@ static inline string turnSeqName(int k, int idx, int t) {
     return ss.str();
 }
 
+static inline string edgeName(int i, int j, int k, int dir) {
+    ostringstream ss; ss << "E_" << i << "_" << j << "_" << k << "_" << dir; return ss.str();
+}
+
+
 class SATEncoder {
   private:
     MetroMap &metro_map;
@@ -177,154 +182,116 @@ class SATEncoder {
                 bool is_sink   = (i == sink_i && j == sink_j);
 
                 Literal occ = litByName(occName(i, j, k));
-                Literal turn = litByName(turnName(i, j, k));
-                addImplication(turn, occ);  // A turn can only appear on an occupied cell.
-                line_turn_vars[k].push_back(turn.id);
 
-                vector<pair<int, Literal>> incomingPorts;
-                vector<pair<int, Literal>> outgoingPorts;
+                // Collect half-edges and wire E→X, E→X(neigh), and E↔E(neigh)
+                vector<pair<int, Literal>> edges;
+                collectEdgesAndWire(i, j, k, occ, edges);
 
-                // Zero ports only live on source/sink cells.
-                if (is_source) {
-                    Literal in_zero = litByName(inName(i, j, k, 0));
-                    addUnit(in_zero);                 // Start is anchored to the virtual source.
-                    addImplication(in_zero, occ);     // Occupancy follows from using the source.
-                    incomingPorts.push_back({0, in_zero});
-                }
-                if (is_sink) {
-                    Literal out_zero = litByName(outName(i, j, k, 0));
-                    addUnit(out_zero);                 // Sink is anchored to the virtual sink.
-                    addImplication(out_zero, occ);     // Occupancy follows from using the sink.
-                    outgoingPorts.push_back({0, out_zero});
-                }
-
-                // Real grid directions.
-                for (int dir = DIR_RIGHT; dir <= DIR_DOWN; ++dir) {
-                    int ni, nj;
-                    if (!step(i, j, dir, ni, nj)) continue;
-
-                    Literal in_lit  = litByName(inName(i, j, k, dir));
-                    Literal out_lit = litByName(outName(i, j, k, dir));
-                    incomingPorts.push_back({dir, in_lit});
-                    outgoingPorts.push_back({dir, out_lit});
-
-                    // A single side cannot be used simultaneously for entry and exit.
-                    Clause block_same;
-                    block_same.addLiteral(in_lit.neg());
-                    block_same.addLiteral(out_lit.neg());
-                    addClause(block_same);
-
-                    // Port usage implies occupancy of the cell itself.
-                    addImplication(in_lit, occ);   // (¬IN → X_ijk)
-                    addImplication(out_lit, occ);  // (¬OUT → X_ijk)
-
-                    // Synchronise with the neighbour.
-                    int opp = getOppositeDirIndex(dir);
-                    Literal neigh_in  = litByName(inName(ni, nj, k, opp));
-                    Literal neigh_out = litByName(outName(ni, nj, k, opp));
-                    Literal neigh_occ = litByName(occName(ni, nj, k));
-
-                    // Leaving towards (ni,nj) forces that cell to register the entry and be occupied.
-                    addImplication(out_lit, neigh_in);   // (¬OUT_ijk_d → IN_ni_nj_k_opp)
-                    addImplication(out_lit, neigh_occ);  // (¬OUT_ijk_d → X_ni_nj_k)
-
-                    // If we claim to arrive from (ni,nj) then the neighbour must really send us here.
-                    addImplication(in_lit, neigh_out);   // (¬IN_ijk_d → OUT_ni_nj_k_opp)
-                    addImplication(in_lit, neigh_occ);   // (¬IN_ijk_d → X_ni_nj_k)
-                }
-
-                // Prepare lists without the virtual ports for the usual degree constraints.
-                vector<Literal> incomingReal;
-                vector<Literal> outgoingReal;
-                for (auto &[dir, lit] : incomingPorts) {
-                    if (dir != 0) incomingReal.push_back(lit);
-                }
-                for (auto &[dir, lit] : outgoingPorts) {
-                    if (dir != 0) outgoingReal.push_back(lit);
-                }
-
-                if (is_source) {
-                    addUnit(occ);  // Source cell must belong to the line.
-
-                    // No other entry is allowed into the source.
-                    for (const auto &lit : incomingReal) {
-                        Clause forbid_entry;
-                        forbid_entry.addLiteral(lit.neg());
-                        addClause(forbid_entry);        // IN ports (dir≠0) are forced false.
-                    }
-
-                    if (outgoingReal.empty()) {
-                        Clause impossible;
-                        impossible.addLiteral(occ.neg());   // Isolated source => infeasible instance.
-                        addClause(impossible);
-                    } else {
-                        addExactlyOne(outgoingReal);    // Exactly one real edge leaves the source.
-                    }
-                    Clause no_turn;
-                    no_turn.addLiteral(turn.neg());
-                    addClause(no_turn);                 // Source is never counted as a turn.
+                // Endpoints: must be occupied and have degree = 1 (exactly one edge).
+                if (is_source || is_sink) {
+                    addUnit(occ);
+                    if (edges.empty()) { addClause(Clause{ occ.neg() }); continue; }
+                    vector<Literal> E; E.reserve(edges.size());
+                    for (auto &pr : edges) E.push_back(pr.second);
+                    addExactlyOne(E);
+                    // No TURN at endpoints
                     continue;
                 }
 
-                if (is_sink) {
-                    addUnit(occ);  // Sink cell must belong to the line.
-
-                    // No real edge may leave the sink.
-                    for (const auto &lit : outgoingReal) {
-                        Clause forbid_exit;
-                        forbid_exit.addLiteral(lit.neg());
-                        addClause(forbid_exit);         // OUT ports (dir≠0) are forced false.
-                    }
-
-                    if (incomingReal.empty()) {
-                        Clause impossible;
-                        impossible.addLiteral(occ.neg());   // Isolated sink => infeasible instance.
-                        addClause(impossible);
-                    } else {
-                        addExactlyOne(incomingReal);    // Exactly one real edge enters the sink.
-                    }
-                    Clause no_turn;
-                    no_turn.addLiteral(turn.neg());
-                    addClause(no_turn);                 // Sink is never counted as a turn.
+                // Interiors: if fewer than 2 sides exist, interior cannot be used.
+                if ((int)edges.size() < 2) {
+                    addClause(Clause{ occ.neg() });
                     continue;
                 }
 
-                // Interior cells: occupancy drives the presence of ports.
-                if (incomingReal.empty() || outgoingReal.empty()) {
-                    // Dead-ends cannot appear on a valid interior cell.
-                    Clause forbid;
-                    forbid.addLiteral(occ.neg());
-                    addClause(forbid);
-                    Clause no_turn;
-                    no_turn.addLiteral(turn.neg());
-                    addClause(no_turn);
-                    continue;
-                }
+                // Degree exactly 2 when occupied.
+                interiorDegreeExactlyTwo(occ, edges);
 
-                addGuardedAtLeastOne(occ, incomingReal);  // If occupied, pick at least one entry.
-                addGuardedAtLeastOne(occ, outgoingReal);  // If occupied, pick at least one exit.
-                addAtMostOne(incomingReal);               // At most one real entry port.
-                addAtMostOne(outgoingReal);               // At most one real exit port.
-
-                // Encode the exact turning behaviour.
-                for (auto &[dir_in, in_lit] : incomingPorts) {
-                    if (dir_in == 0) continue;
-                    for (auto &[dir_out, out_lit] : outgoingPorts) {
-                        if (dir_out == 0) continue;
-                        Clause c;
-                        c.addLiteral(in_lit.neg());
-                        c.addLiteral(out_lit.neg());
-                        if (dir_in == getOppositeDirIndex(dir_out)) {
-                            c.addLiteral(turn.neg());   // Straight segment forces TURN = false.
-                        } else {
-                            c.addLiteral(turn);         // A bend forces TURN = true.
-                        }
-                        addClause(c);
-                    }
-                }
+                // Turn semantics derived from the chosen two edges.
+                encodeTurnFromEdges(i, j, k, edges, occ);
             }
         }
     }
+
+
+    // Collect available edges (real 4 dirs). Wire E→X, E→X(neigh), and E↔E(neigh).
+    void collectEdgesAndWire(int i, int j, int k, Literal X,
+                            vector<pair<int, Literal>> &edges) {
+        for (int dir = DIR_RIGHT; dir <= DIR_DOWN; ++dir) {
+            int ni, nj;
+            if (!step(i, j, dir, ni, nj)) continue;
+
+            Literal E  = litByName(edgeName(i, j, k, dir));
+            Literal En = litByName(edgeName(ni, nj, k, getOppositeDirIndex(dir)));
+            Literal Xn = litByName(occName(ni, nj, k));
+
+            // Using the edge implies both incident cells are occupied.
+            addImplication(E, X);
+            addImplication(E, Xn);
+
+            // Make the edge undirected: E ↔ En (two implications).
+            addImplication(E, En);
+            addImplication(En, E);
+
+            edges.push_back({dir, E});
+        }
+    }
+
+    // Interiors: enforce degree exactly 2 when X is true, on the *available* sides.
+    void interiorDegreeExactlyTwo(Literal X, const vector<pair<int, Literal>> &edges) {
+        vector<Literal> E; E.reserve(edges.size());
+        for (auto &pr : edges) E.push_back(pr.second);
+
+        // X → (ΣE ≥ 1)
+        addGuardedAtLeastOne(X, E);
+
+        // Forbid degree = 1 when X is true:
+        // (X ∧ E_d) → (∨_{d'≠d} E_{d'})  →  (¬X ∨ ¬E_d ∨ E_o1 ∨ E_o2 ∨ E_o3)
+        for (size_t t = 0; t < E.size(); ++t) {
+            Clause c; c.addLiteral(X.neg()); c.addLiteral(E[t].neg());
+            for (size_t u = 0; u < E.size(); ++u) if (u != t) c.addLiteral(E[u]);
+            addClause(c);
+        }
+
+        // At most two: forbid any triple of edges simultaneously true.
+        for (size_t a = 0; a < E.size(); ++a)
+            for (size_t b = a + 1; b < E.size(); ++b)
+                for (size_t c = b + 1; c < E.size(); ++c)
+                    addClause(Clause{ E[a].neg(), E[b].neg(), E[c].neg() });
+    }
+
+    // Turn = 1  iff one vertical edge and one horizontal edge are chosen (under deg=2).
+    void encodeTurnFromEdges(int i, int j, int k,
+                            const vector<pair<int, Literal>> &edges, Literal X) {
+        // Find per-direction edges if present.
+        Literal Er(0,false), El(0,false), Eu(0,false), Ed(0,false);
+        bool hr=false, hl=false, hu=false, hd=false;
+        for (auto &[dir, E] : edges) {
+            if (dir == DIR_RIGHT) { Er = E; hr = true; }
+            if (dir == DIR_LEFT)  { El = E; hl = true; }
+            if (dir == DIR_UP)    { Eu = E; hu = true; }
+            if (dir == DIR_DOWN)  { Ed = E; hd = true; }
+        }
+        bool hasH = (hr || hl), hasV = (hu || hd);
+        if (!(hasH && hasV)) return;  // Without both orientations, a turn is impossible.
+
+        Literal T = litByName(turnName(i, j, k));
+        addImplication(T, X); // helpful propagation
+
+        // Straight ⇒ ¬T
+        if (hu && hd) addClause(Clause{ Eu.neg(), Ed.neg(), T.neg() });
+        if (hl && hr) addClause(Clause{ El.neg(), Er.neg(), T.neg() });
+
+        // Any orthogonal pair ⇒ T  (enumerate only edges that exist)
+        if (hu && hl) addClause(Clause{ Eu.neg(), El.neg(), T });
+        if (hu && hr) addClause(Clause{ Eu.neg(), Er.neg(), T });
+        if (hd && hl) addClause(Clause{ Ed.neg(), El.neg(), T });
+        if (hd && hr) addClause(Clause{ Ed.neg(), Er.neg(), T });
+
+        // Track for per-line turn budget
+        line_turn_vars[k].push_back(T.id);
+    }
+
 
     void enforceTurnBudget(int k) {
         if (J < 0) return;
@@ -450,7 +417,7 @@ class SATEncoder {
             cerr << "Error: Cannot open DIMACS file for writing: " << filename << endl;
             return false;
         }
-        out << "c Re-implemented SAT encoding" << '\n';
+        // out << "c Re-implemented SAT encoding" << '\n';
         out << "p cnf " << variableCount() << " " << clauseCount() << '\n';
         for (const auto &clause : clauses) {
             for (int lit : clause.lits) out << lit << ' ';

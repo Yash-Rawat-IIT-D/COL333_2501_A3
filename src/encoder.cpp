@@ -211,7 +211,7 @@ class SATEncoder {
 
             vector<Literal> sinz_lits;
 
-            // Setting up Sinz Literals
+            // Setting up Sinz Literals (k-1 auxillary variables)
             for (int d = 1; d <= K - 1; d++) {
                 string sinz_name = __sinz_lit_str(i, j, d);
                 track_literal(sinz_name);
@@ -240,7 +240,6 @@ class SATEncoder {
         void encodeOccupancy() {
             // Encode occupancy constraints here
             // For each cell, ensure that at most one line occupies it
-            
             for (int i = 0; i < M; i++) {
                 for (int j = 0; j < N; j++) {
                     vector<Literal> cell_literals;
@@ -255,7 +254,6 @@ class SATEncoder {
         }
 
         void local_constraints(int i, int j, int k, int src_i, int src_j, int sink_i, int sink_j) {
-
             // Step1 : Implement Directionality Guards
             Literal lit_occ(__occ_lit_str(i, j, k), TRUE);
             for (int dir = 1; dir <= 4; dir++) {
@@ -290,14 +288,14 @@ class SATEncoder {
                     else if (dir == LEFT) nj -= 1;
                     else if (dir == DOWN) ni += 1;
                     Literal lit_in(__in_lit_str(ni, nj, k, getOppositeDirIndex(dir)), TRUE);
-
+                    // out(i,j,dir) => in(ni,nj, opp_dir)
                     Clause cl1; cl1.addLiteral(lit_out.getNegation()); cl1.addLiteral(lit_in);
                     directionality_clauses.push_back(cl1);
 
-                    // if (ni == sink_i && nj == sink_j) continue;
 
                     Literal lit_occ_neigh(__occ_lit_str(ni, nj, k), TRUE);
                     Clause cl2; cl2.addLiteral(lit_out.getNegation()); cl2.addLiteral(lit_occ_neigh);
+                    // // out(i,j,dir) => occurence(ni,nj)
                     directionality_clauses.push_back(cl2);
 
                     // In(i,j,dir) ⇒ Out(neigh, opp)    : (¬In(i,j,dir) ∨ Out(ni,nj,opp))
@@ -341,8 +339,8 @@ class SATEncoder {
                     { Clause c; c.addLiteral(Literal(__out_lit_str(i,j,k,d), false)); directionality_clauses.push_back(c); }
                     { Clause c; c.addLiteral(Literal(__in_lit_str(i,j,k,d),  false)); directionality_clauses.push_back(c); }
                 }
-                // Optional: also forbid a "turn" at a 0-length line cell
-                { Clause c; c.addLiteral(Literal(__turn_lit_str(i,j,k), false)); turn_clauses.push_back(c); }
+                // // Optional: also forbid a "turn" at a 0-length line cell
+                // { Clause c; c.addLiteral(Literal(__turn_lit_str(i,j,k), false)); turn_clauses.push_back(c); }
                 return;
             }
             if (is_source) {

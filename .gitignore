@@ -2,6 +2,7 @@
 .vscode/
 A3.pdf
 testing.cpp
+testing1.cpp
 # *.city
 # *.cnf
 # *.map

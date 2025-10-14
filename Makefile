@@ -44,4 +44,4 @@ clean:
 # 	rm -f $(DBG_MAIN1) $(DBG_MAIN2)
 # 	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(RELEASE_DIR)
 # 	rmdir --ignore-fail-on-non-empty $(BIN_DIR)/$(DBG_DIR)
-	rm input/*.satinput input/*.satoutput input/*.satinput.map input/*.metromap
+	rm -f encoder decoder input/*.satinput input/*.satoutput input/*.satinput.map input/*.metromap
