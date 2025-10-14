@@ -10,12 +10,14 @@ rm -f encoder decoder
 
 echo "[2/6] Building encoder…"
 # uncomment this for old encoder and decoder
-# g++ -std=c++11 -O2 -I src -o encoder src/encoder.cpp
-g++ -std=c++11 -O2 -I src -o encoder src/newenc.cpp
+# g++ -std=c++17 -O2 -I src -o encoder src/encoder.cpp
+# g++ -std=c++17 -O2 -I src -o encoder src/newenc.cpp
+g++ -std=c++17 -O2 -I src -o encoder src/finalenc.cpp
 
 echo "[3/6] Building decoder…"
-# g++ -std=c++11 -O2 -I src -o decoder src/decoder.cpp
-g++ -std=c++11 -O2 -I src -o decoder src/newdec.cpp
+# g++ -std=c++17 -O2 -I src -o decoder src/decoder.cpp
+# g++ -std=c++17 -O2 -I src -o decoder src/newdec.cpp
+g++ -std=c++17 -O2 -I src -o decoder src/finaldec.cpp
 
 echo "[4/6] Running run1 on ${TARGET}…"
 ./run1.sh "$TARGET"
