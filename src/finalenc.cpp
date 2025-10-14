@@ -168,64 +168,186 @@ class SATEncoder {
     }
 
     void encodeCellAMO() {
-        // One metro per cell using pairwise AMO (K ≤ 10 in inputs so this stays cheap).
+        // At most one metro line uses a given cell (i,j) across all k).
         for (int i = 0; i < M; ++i) {
             for (int j = 0; j < N; ++j) {
-                vector<Literal> occ;
-                occ.reserve(K);
+                // Build derived presence vars P(i,j,k) from incident edges
+                vector<Literal> Pk; Pk.reserve(K);
                 for (int k = 0; k < K; ++k) {
-                    occ.push_back(litByName(occName(i, j, k)));
+                    vector<pair<int,Literal>> edges;
+                    collectIncidentCanonicalEdges(i, j, k, edges);
+
+                    vector<Literal> incE; incE.reserve(edges.size());
+                    for (auto &pr: edges) incE.push_back(pr.second);
+
+                    if (incE.empty()) continue; // cell unusable for this k
+
+                    // Define P(i,j,k) ↔ OR incident edges (directionless presence)
+                    definePresenceVarFromEdges(i, j, k, incE);
+                    Pk.push_back(presenceVar(i,j,k));
                 }
-                addAtMostOne(occ);
+                // Run AMO (sequential) across the P(i,j,k)
+                addAtMostOneSequential(Pk);
             }
         }
     }
 
+
     void encodeLineFlow(int k) {
         auto &starts = metro_map.getLineStarts(k);
         auto &ends   = metro_map.getLineEnds(k);
-        int src_i = starts[0].second;
-        int src_j = starts[0].first;
-        int sink_i = ends[0].second;
-        int sink_j = ends[0].first;
+        int src_i = starts[0].second, src_j = starts[0].first;
+        int sink_i = ends[0].second,   sink_j = ends[0].first;
 
         for (int i = 0; i < M; ++i) {
             for (int j = 0; j < N; ++j) {
                 bool is_source = (i == src_i && j == src_j);
                 bool is_sink   = (i == sink_i && j == sink_j);
 
-                Literal occ = litByName(occName(i, j, k));
+                vector<pair<int,Literal>> edges;
+                collectIncidentCanonicalEdges(i, j, k, edges);
 
-                // Collect half-edges and wire E→X, E→X(neigh), and E↔E(neigh)
-                vector<pair<int, Literal>> edges;
-                collectEdgesAndWire(i, j, k, occ, edges);
+                vector<Literal> E; E.reserve(edges.size());
+                for (auto &pr: edges) E.push_back(pr.second);
 
-                // Endpoints: must be occupied and have degree = 1 (exactly one edge).
                 if (is_source || is_sink) {
-                    addUnit(occ);
-                    if (edges.empty()) { addClause(Clause{ occ.neg() }); continue; }
-                    vector<Literal> E; E.reserve(edges.size());
-                    for (auto &pr : edges) E.push_back(pr.second);
-                    addExactlyOne(E);
-                    // No TURN at endpoints
+                    // Endpoints must have degree exactly 1
+                    addAtLeastOne(E);       // deg ≥ 1
+                    // pairwise AMO on endpoint is tiny (≤4); keep it simple
+                    addAtMostOne(E);        // deg ≤ 1
+                    // No TURN clause at endpoints (optional, doesn’t hurt)
                     continue;
                 }
 
-                // Interiors: if fewer than 2 sides exist, interior cannot be used.
-                if ((int)edges.size() < 2) {
-                    addClause(Clause{ occ.neg() });
-                    continue;
+                // Interiors:
+                if ((int)E.size() >= 2) {
+                    // Edge-only degree=2 semantics for *used* cells:
+                    // Forbid degree 1 and 3; allow degree 0 or 2.
+                    interiorDegreeExactlyTwo_edgeOnly(E);
+                    // TURN from edges only
+                    encodeTurnFromEdges_edgeOnly(i, j, k, edges);
                 }
-
-                // Degree exactly 2 when occupied.
-                interiorDegreeExactlyTwo(occ, edges);
-
-                // Turn semantics derived from the chosen two edges.
-                encodeTurnFromEdges(i, j, k, edges, occ);
+                // If E.size()<2, the cell can’t be used — nothing to constrain.
             }
         }
     }
 
+
+    // ---- NEW: Linear AMO (Sinz / ladder) ----
+    void addAtMostOneSequential(const vector<Literal>& lits) {
+        const int n = (int)lits.size();
+        if (n <= 1) return;
+        // s_1,...,s_{n-1}
+        vector<int> s(n - 1);
+        for (int i = 0; i < n - 1; ++i) {
+            ostringstream ss; ss << "S_AMO_" << clauses.size() << "_" << i;
+            s[i] = getVar(ss.str());
+        }
+        // (¬x1 ∨ s1)
+        addClause(Clause{ lits[0].neg(), Literal(s[0]) });
+        // For i=2..n-1:
+        for (int i = 1; i < n - 1; ++i) {
+            // (¬x_{i+1} ∨ s_i)
+            addClause(Clause{ lits[i].neg(), Literal(s[i]) });
+            // (¬s_{i-1} ∨ s_i)
+            addClause(Clause{ Literal(s[i-1]).neg(), Literal(s[i]) });
+            // (¬x_i ∨ ¬s_{i-1})
+            addClause(Clause{ lits[i].neg(), Literal(s[i-1]).neg() });
+        }
+        // (¬x_n ∨ ¬s_{n-2})
+        addClause(Clause{ lits[n-1].neg(), Literal(s[n-2]).neg() });
+    }
+
+    // ---- NEW: Incident canonical edge literals around (i,j) for line k ----
+    void collectIncidentCanonicalEdges(int i, int j, int k,
+                                    vector<pair<int,Literal>>& edges) {
+        edges.clear(); edges.reserve(4);
+        auto push_if = [&](int dir) {
+            int ci, cj, cdir;
+            if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return;
+            // Neighbor must be in-bounds for the original step
+            int ni, nj; if (!step(i, j, dir, ni, nj)) return;
+            string en = edgeName(i, j, k, dir);
+            if (en.empty()) return;
+            edges.push_back({dir, litByName(en)});
+        };
+        push_if(DIR_RIGHT);
+        push_if(DIR_LEFT);
+        push_if(DIR_UP);
+        push_if(DIR_DOWN);
+    }
+
+    // ---- NEW: Edge-only interior constraints (no X guard) ----
+    void interiorDegreeExactlyTwo_edgeOnly(const vector<Literal>& E) {
+        const int d = (int)E.size(); // d<=4
+        if (d < 2) return;           // Cell simply cannot be used; nothing to constrain
+
+        // No degree-1: for each e, (¬e ∨ (∨ others))
+        for (int t = 0; t < d; ++t) {
+            Clause c; c.addLiteral(E[t].neg());
+            for (int u = 0; u < d; ++u) if (u != t) c.addLiteral(E[u]);
+            addClause(c);
+        }
+        // AtMostTwo: forbid any triple of edges (d<=4 => at most 4 clauses)
+        for (int a = 0; a < d; ++a)
+            for (int b = a+1; b < d; ++b)
+                for (int c = b+1; c < d; ++c)
+                    addClause(Clause{ E[a].neg(), E[b].neg(), E[c].neg() });
+    }
+
+    // ---- NEW: TURN from edges only (no X) ----
+    Literal turnVar(int i,int j,int k){ return litByName(turnName(i,j,k)); }
+
+    void encodeTurnFromEdges_edgeOnly(int i,int j,int k,
+                                    const vector<pair<int,Literal>>& edges) {
+        // Identify available directions
+        Literal Er(0,false), El(0,false), Eu(0,false), Ed(0,false);
+        bool hr=false, hl=false, hu=false, hd=false;
+        for (auto &pr: edges) {
+            if (pr.first==DIR_RIGHT){ Er=pr.second; hr=true; }
+            if (pr.first==DIR_LEFT ){ El=pr.second; hl=true; }
+            if (pr.first==DIR_UP   ){ Eu=pr.second; hu=true; }
+            if (pr.first==DIR_DOWN ){ Ed=pr.second; hd=true; }
+        }
+        bool hasH = (hr||hl), hasV=(hu||hd);
+        if (!(hasH && hasV)) return;
+
+        Literal T = turnVar(i,j,k);
+
+        // Straight ⇒ ¬T
+        if (hu && hd) addClause(Clause{ Eu.neg(), Ed.neg(), T.neg() });
+        if (hl && hr) addClause(Clause{ El.neg(), Er.neg(), T.neg() });
+
+        // Any orthogonal pair ⇒ T
+        if (hu && hl) addClause(Clause{ Eu.neg(), El.neg(), T });
+        if (hu && hr) addClause(Clause{ Eu.neg(), Er.neg(), T });
+        if (hd && hl) addClause(Clause{ Ed.neg(), El.neg(), T });
+        if (hd && hr) addClause(Clause{ Ed.neg(), Er.neg(), T });
+
+        // Track once per cell
+        if (line_turn_vars[k].empty() || line_turn_vars[k].back()!=T.id)
+            line_turn_vars[k].push_back(T.id);
+    }
+
+    // ---- NEW: helper for a derived presence var P(i,j,k) used for AMO/popular cities
+    // P(i,j,k) is TRUE iff any incident edge of line k touches (i,j).
+    Literal presenceVar(int i,int j,int k){
+        ostringstream ss; ss << "P_"<<i<<"_"<<j<<"_"<<k;
+        return litByName(ss.str());
+    }
+    void definePresenceVarFromEdges(int i,int j,int k,
+                                    const vector<Literal>& incE) {
+        if (incE.empty()) return; // unreachable cell
+        Literal P = presenceVar(i,j,k);
+        // (P → OR E)
+        {
+            Clause c; c.addLiteral(P.neg());
+            for (auto &e: incE) c.addLiteral(e);
+            addClause(c);
+        }
+        // (E → P) for all incident edges
+        for (auto &e: incE) addClause(Clause{ e.neg(), P });
+    }
 
     // Collect available edges (real 4 dirs). Wire E→X, E→X(neigh), using canonical edge representation.
     void collectEdgesAndWire(int i, int j, int k, Literal X,
@@ -383,23 +505,25 @@ class SATEncoder {
     }
 
     void encodePopularCities() {
-        int P = metro_map.getPopularCitiesCount();
-        if (P <= 0) return;
+        int Pgroups = metro_map.getPopularCitiesCount();
+        if (Pgroups <= 0) return;
 
         auto &groups = metro_map.getPopularCities();
-        for (int p = 0; p < P; ++p) {
-            Clause coverage;
+        for (int p = 0; p < Pgroups; ++p) {
+            Clause coverage; // big OR over all k and incident edges at those cells
             for (auto &cell : groups[p]) {
-                int col = cell.first;
-                int row = cell.second;
+                int col = cell.first, row = cell.second;
                 if (!inBounds(row, col)) continue;
                 for (int k = 0; k < K; ++k) {
-                    coverage.addLiteral(litByName(occName(row, col, k)));
+                    vector<pair<int,Literal>> edges;
+                    collectIncidentCanonicalEdges(row, col, k, edges);
+                    for (auto &pr: edges) coverage.addLiteral(pr.second);
                 }
             }
             if (!coverage.empty()) addClause(coverage);
         }
     }
+
 
   public:
     SATEncoder(MetroMap &m) : metro_map(m) {

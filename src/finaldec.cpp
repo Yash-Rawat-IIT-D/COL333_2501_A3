@@ -359,18 +359,67 @@ public:
     }
 
     void buildSolutionGrid() {
-        for (int i = 0; i < M; ++i) {
-            for (int j = 0; j < N; ++j) solution_grid[i][j] = Cell();
-        }
+        // Clear the grid
+        for (int i = 0; i < M; ++i)
+            for (int j = 0; j < N; ++j)
+                solution_grid[i][j] = Cell();
 
-        for (const auto &entry : true_assignments) {
-            int i, j, k;
-            if (parseOccupancyVar(entry.first, i, j, k)) {
-                CellDir dir = directionForCell(i, j, k);
-                solution_grid[i][j] = Cell(k, dir);
+        // For each cell, pick any line k that has an incident true edge here
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                int chosen_k = -1;
+                CellDir chosen_dir = EMPTY;
+
+                for (int k = 0; k < K; ++k) {
+                    vector<pair<int,string>> incident;
+                    incident.reserve(4);
+
+                    auto push_if = [&](int dir){
+                        int ci, cj, cdir;
+                        if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return;
+
+                        // Neighbor in-bounds (match encoder's step())
+                        int ni = i, nj = j;
+                        if (dir == DIR_RIGHT)      nj = j + 1;
+                        else if (dir == DIR_LEFT)  nj = j - 1;
+                        else if (dir == DIR_UP)    ni = i - 1;
+                        else /* DIR_DOWN */        ni = i + 1;
+
+                        if (ni < 0 || ni >= M || nj < 0 || nj >= N) return;
+
+                        string e = edgeNameCanonical(i, j, k, dir);
+                        if (!e.empty()) incident.push_back({dir, e});
+                    };
+
+                    push_if(DIR_RIGHT);
+                    push_if(DIR_LEFT);
+                    push_if(DIR_UP);
+                    push_if(DIR_DOWN);
+
+                    // Is any incident edge true for this line k?
+                    int dir_true = -1;
+                    for (auto &pr : incident) {
+                        auto it = true_assignments.find(pr.second);
+                        if (it != true_assignments.end() && it->second) {
+                            dir_true = pr.first;
+                            break;
+                        }
+                    }
+                    if (dir_true == -1) continue;
+
+                    chosen_k = k;
+                    chosen_dir = makeCellDir(dir_true);
+                    break; // take the first line we find for display
+                }
+
+                if (chosen_k != -1) {
+                    solution_grid[i][j] = Cell(chosen_k, chosen_dir);
+                }
             }
         }
     }
+
+
 
     vector<string> generateSolution() const {
         vector<string> solution;
