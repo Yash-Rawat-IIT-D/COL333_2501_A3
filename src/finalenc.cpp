@@ -63,8 +63,21 @@ static inline string turnSeqName(int k, int idx, int t) {
     return ss.str();
 }
 
+// Canonicalize (i,j,dir) to a unique undirected edge representation
+static inline bool canonicalEdge(int i, int j, int dir, int& ci, int& cj, int& cdir) {
+    if (dir == DIR_RIGHT) { ci = i; cj = j; cdir = 0; return true; }
+    if (dir == DIR_DOWN)  { ci = i; cj = j; cdir = 1; return true; }
+    if (dir == DIR_LEFT)  { ci = i; cj = j - 1; cdir = 0; return cj >= 0; }
+    if (dir == DIR_UP)    { ci = i - 1; cj = j; cdir = 1; return ci >= 0; }
+    return false;
+}
+
 static inline string edgeName(int i, int j, int k, int dir) {
-    ostringstream ss; ss << "E_" << i << "_" << j << "_" << k << "_" << dir; return ss.str();
+    int ci, cj, cdir;
+    if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return "";
+    ostringstream ss;
+    ss << "E_" << ci << "_" << cj << "_" << k << "_" << cdir;
+    return ss.str();
 }
 
 
@@ -214,26 +227,28 @@ class SATEncoder {
     }
 
 
-    // Collect available edges (real 4 dirs). Wire E→X, E→X(neigh), and E↔E(neigh).
+    // Collect available edges (real 4 dirs). Wire E→X, E→X(neigh), using canonical edge representation.
     void collectEdgesAndWire(int i, int j, int k, Literal X,
-                            vector<pair<int, Literal>> &edges) {
+                         vector<pair<int, Literal>> &edges) {
         for (int dir = DIR_RIGHT; dir <= DIR_DOWN; ++dir) {
             int ni, nj;
             if (!step(i, j, dir, ni, nj)) continue;
 
-            Literal E  = litByName(edgeName(i, j, k, dir));
-            Literal En = litByName(edgeName(ni, nj, k, getOppositeDirIndex(dir)));
+            // Canonical edge var (same ID from either endpoint / direction)
+            string edge_name = edgeName(i, j, k, dir);
+            if (edge_name.empty()) continue;
+            Literal E  = litByName(edge_name);
             Literal Xn = litByName(occName(ni, nj, k));
 
-            // Using the edge implies both incident cells are occupied.
-            addImplication(E, X);
-            addImplication(E, Xn);
-
-            // Make the edge undirected: E ↔ En (two implications).
-            addImplication(E, En);
-            addImplication(En, E);
-
+            // Always expose this direction to the degree/turn code:
             edges.push_back({dir, E});
+
+            // BUT emit the edge->occupancy implications only once per undirected edge:
+            const bool is_canonical_here = (dir == DIR_RIGHT || dir == DIR_DOWN);
+            if (is_canonical_here) {
+                addImplication(E, X);   // E -> X(i,j,k)
+                addImplication(E, Xn);  // E -> X(ni,nj,k)
+            }
         }
     }
 

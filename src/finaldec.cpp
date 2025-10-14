@@ -10,6 +10,22 @@ const int DIR_UP    = 2;
 const int DIR_LEFT  = 3;
 const int DIR_DOWN  = 4;
 
+// Use the same canonicalization as the encoder: a single variable per
+// undirected edge, anchored on RIGHT/DOWN from a canonical cell.
+static inline bool canonicalEdge(int i, int j, int dir, int &ci, int &cj, int &cdir) {
+    if (dir == DIR_RIGHT) { ci = i; cj = j;     cdir = 0; return true; }
+    if (dir == DIR_DOWN)  { ci = i; cj = j;     cdir = 1; return true; }
+    if (dir == DIR_LEFT)  { ci = i; cj = j - 1; cdir = 0; return (cj >= 0); }
+    if (dir == DIR_UP)    { ci = i - 1; cj = j; cdir = 1; return (ci >= 0); }
+    return false;
+}
+
+static inline string edgeNameCanonical(int i, int j, int k, int dir) {
+    int ci, cj, cdir;
+    if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return string();
+    ostringstream ss; ss << "E_" << ci << "_" << cj << "_" << k << "_" << cdir; return ss.str();
+}
+
 static inline void step_by_dir(int x, int y, int dir, int &nx, int &ny) {
     nx = x; ny = y;
     switch (dir) {
@@ -89,15 +105,14 @@ private:
 
     CellDir directionForCell(int i, int j, int k) const {
         // For display only. If degree=1 (endpoint), show that dir.
-        // If degree=2 (interior), pick a canonical dir just to render something.
-        int chosen_dir = -1, cnt = 0;
+        // If degree=2 (interior), pick the first true dir.
+        int chosen_dir = -1;
         for (int dir = 1; dir <= 4; ++dir) {
-            string evar = "E_" + to_string(i) + "_" + to_string(j) + "_" +
-                        to_string(k) + "_" + to_string(dir);
+            string evar = edgeNameCanonical(i, j, k, dir);
+            if (evar.empty()) continue;
             auto it = true_assignments.find(evar);
             if (it != true_assignments.end() && it->second) {
-                ++cnt;
-                if (chosen_dir == -1) chosen_dir = dir;
+                chosen_dir = dir; break;
             }
         }
         if (chosen_dir == -1) return EMPTY;
@@ -192,11 +207,11 @@ private:
         for (int steps = 0; steps <= M * N; ++steps) {
             if (curr_x == end_x && curr_y == end_y) break;
 
-            // Read true edges E_(i,j,k,dir) at current (i=curr_y, j=curr_x)
+            // Read true edges using canonical names at current (i=curr_y, j=curr_x)
             vector<int> dirs_true;
             for (int dir = 1; dir <= 4; ++dir) {
-                string evar = "E_" + to_string(curr_y) + "_" + to_string(curr_x) + "_" +
-                            to_string(line_k) + "_" + to_string(dir);
+                string evar = edgeNameCanonical(curr_y, curr_x, line_k, dir);
+                if (evar.empty()) continue;
                 auto it = true_assignments.find(evar);
                 if (it != true_assignments.end() && it->second) dirs_true.push_back(dir);
             }
