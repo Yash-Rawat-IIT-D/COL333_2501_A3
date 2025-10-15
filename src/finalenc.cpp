@@ -80,6 +80,12 @@ static inline string edgeName(int i, int j, int k, int dir) {
     return ss.str();
 }
 
+static inline string edgeNameFromSlot(int ci, int cj, int k, int cdir) {
+    ostringstream ss;
+    ss << "E_" << ci << "_" << cj << "_" << k << "_" << cdir;
+    return ss.str();
+}
+
 
 class SATEncoder {
   private:
@@ -192,6 +198,34 @@ class SATEncoder {
             }
         }
     }
+
+    
+    void encodeEdgeAMOAcrossLines() {
+        // Horizontal slots: cdir=0, between (i,j) -- (i,j+1)
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N - 1; ++j) {
+                vector<Literal> Ek;
+                Ek.reserve(K);
+                for (int k = 0; k < K; ++k) {
+                    Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/0)));
+                }
+                addAtMostOne(Ek); // K is small; pairwise is fine
+            }
+        }
+        // Vertical slots: cdir=1, between (i,j) -- (i+1,j)
+        for (int i = 0; i < M - 1; ++i) {
+            for (int j = 0; j < N; ++j) {
+                vector<Literal> Ek;
+                Ek.reserve(K);
+                for (int k = 0; k < K; ++k) {
+                    Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/1)));
+                }
+                addAtMostOne(Ek);
+            }
+        }
+    }
+
+
 
 
     void encodeLineFlow(int k) {
@@ -509,21 +543,30 @@ class SATEncoder {
         int Pgroups = metro_map.getPopularCitiesCount();
         if (Pgroups <= 0) return;
 
-        auto &groups = metro_map.getPopularCities();
+        auto &groups = metro_map.getPopularCities(); // now a flat vector of (col,row)
         for (int p = 0; p < Pgroups; ++p) {
-            Clause coverage; // big OR over all k and incident edges at those cells
-            for (auto &cell : groups) {
-                int col = cell.first, row = cell.second;
-                if (!inBounds(row, col)) continue;
-                for (int k = 0; k < K; ++k) {
-                    vector<pair<int,Literal>> edges;
-                    collectIncidentCanonicalEdges(row, col, k, edges);
-                    for (auto &pr: edges) coverage.addLiteral(pr.second);
-                }
+            Clause coverage; // this popular cell must be covered by some line
+            int col = groups[p].first;
+            int row = groups[p].second;
+            if (!inBounds(row, col)) continue;
+
+            for (int k = 0; k < K; ++k) {
+                vector<pair<int,Literal>> edges;
+                collectIncidentCanonicalEdges(row, col, k, edges);
+                if (edges.empty()) continue;
+
+                // reuse presence variable: P(row,col,k) ↔ OR(incident edges)
+                vector<Literal> incE; incE.reserve(edges.size());
+                for (auto &pr: edges) incE.push_back(pr.second);
+                definePresenceVarFromEdges(row, col, k, incE);
+
+                coverage.addLiteral(presenceVar(row, col, k)); // use P in the big OR
             }
             if (!coverage.empty()) addClause(coverage);
         }
     }
+
+
 
 
   public:
@@ -544,6 +587,7 @@ class SATEncoder {
 
     void encode() {
         encodeCellAMO();
+        encodeEdgeAMOAcrossLines();
         for (int k = 0; k < K; ++k) {
             encodeLineFlow(k);
         }
