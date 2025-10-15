@@ -93,7 +93,7 @@ class SATEncoder {
     int next_var;
     vector<string> var_to_literal;
     unordered_map<string, int> literal_to_var;
-
+    int amo_seq_counter = 0;
     int N, M, K, J;
 
     vector<vector<int>> line_turn_vars;
@@ -193,8 +193,8 @@ class SATEncoder {
                     Pk.push_back(presenceVar(i,j,k));
                 }
                 // Run AMO (sequential) across the P(i,j,k)
-                // addAtMostOneSequential(Pk);
-                addAtMostOne(Pk);
+                addAtMostOneSequential(Pk);
+                // addAtMostOne(Pk);
             }
         }
     }
@@ -209,7 +209,9 @@ class SATEncoder {
                 for (int k = 0; k < K; ++k) {
                     Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/0)));
                 }
-                addAtMostOne(Ek); // K is small; pairwise is fine
+                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // stronger, good for small K
+                // else addAtMostOneSequential(Ek); // fewer clauses if K is large
+                addAtMostOne(Ek);
             }
         }
         // Vertical slots: cdir=1, between (i,j) -- (i+1,j)
@@ -220,6 +222,8 @@ class SATEncoder {
                 for (int k = 0; k < K; ++k) {
                     Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/1)));
                 }
+                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // stronger, good for small K
+                // else addAtMostOneSequential(Ek); // fewer clauses if K is large
                 addAtMostOne(Ek);
             }
         }
@@ -275,7 +279,8 @@ class SATEncoder {
         // s_1,...,s_{n-1}
         vector<int> s(n - 1);
         for (int i = 0; i < n - 1; ++i) {
-            ostringstream ss; ss << "S_AMO_" << clauses.size() << "_" << i;
+            ostringstream ss;
+            ss << "S_AMO_" << (amo_seq_counter++) << "_" << i;
             s[i] = getVar(ss.str());
         }
         // (¬x1 ∨ s1)
@@ -577,6 +582,7 @@ class SATEncoder {
         K = metro_map.getLineNum();
         J = metro_map.getTurnLimit();
         line_turn_vars.resize(K);
+        amo_seq_counter = 0;
     }
 
     int variableCount() const { return next_var - 1; }
