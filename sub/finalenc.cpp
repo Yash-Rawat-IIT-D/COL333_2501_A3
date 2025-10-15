@@ -215,9 +215,9 @@ class SATEncoder {
                 for (int k = 0; k < K; ++k) {
                     Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/0)));
                 }
-                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // for small K
-                // else addAtMostOneSequential(Ek); // if K is large
-                addAtMostOne(Ek);
+                if ((int)Ek.size() <= 10) addAtMostOne(Ek);        // for small K
+                else addAtMostOneSequential(Ek); // if K is large
+                // addAtMostOne(Ek);
             }
         }
         // Vertical Slots: Cdir=1, between (i,j) to (i+1,j)
@@ -229,9 +229,9 @@ class SATEncoder {
                 for (int k = 0; k < K; ++k) {
                     Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/1)));
                 }
-                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // for small K
-                // else addAtMostOneSequential(Ek); // if K is large
-                addAtMostOne(Ek);
+                if ((int)Ek.size() <= 10) addAtMostOne(Ek);        // for small K
+                else addAtMostOneSequential(Ek); // if K is large
+                // addAtMostOne(Ek);
             }
         }
     }
