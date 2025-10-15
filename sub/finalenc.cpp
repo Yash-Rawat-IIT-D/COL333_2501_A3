@@ -1,0 +1,666 @@
+#include <bits/stdc++.h>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include "utils.hpp"
+using namespace std;
+
+// Grid directions: 0 is reserved for source/sink ports, 1..4 are the four neighbours.
+const int DIR_RIGHT = 1;
+const int DIR_UP    = 2;
+const int DIR_LEFT  = 3;
+const int DIR_DOWN  = 4;
+
+struct Literal {
+    int id;
+    bool pos;
+
+    Literal(int v, bool p = true) : id(v), pos(p) {}
+
+    Literal neg() const { return Literal(id, !pos); }
+    int toInt() const { return pos ? id : -id; }
+};
+
+struct Clause {
+    vector<int> lits;
+
+    Clause() = default;
+    Clause(initializer_list<Literal> init) {
+        for (const auto &lit : init) lits.push_back(lit.toInt());
+    }
+
+    void addLiteral(const Literal &lit) { lits.push_back(lit.toInt()); }
+    bool empty() const { return lits.empty(); }
+};
+
+static inline string occName(int i, int j, int k) {
+    ostringstream ss;
+    ss << "X_" << i << "_" << j << "_" << k;
+    return ss.str();
+}
+
+static inline string inName(int i, int j, int k, int dir) {
+    ostringstream ss;
+    ss << "IN_" << i << "_" << j << "_" << k << "_" << dir;
+    return ss.str();
+}
+
+static inline string outName(int i, int j, int k, int dir) {
+    ostringstream ss;
+    ss << "OUT_" << i << "_" << j << "_" << k << "_" << dir;
+    return ss.str();
+}
+
+static inline string turnName(int i, int j, int k) {
+    ostringstream ss;
+    ss << "TURN_" << i << "_" << j << "_" << k;
+    return ss.str();
+}
+
+static inline string turnSeqName(int k, int idx, int t) {
+    ostringstream ss;
+    ss << "TS_" << k << "_" << idx << "_" << t;
+    return ss.str();
+}
+
+static inline bool canonicalEdge(int i, int j, int dir, int& ci, int& cj, int& cdir) {
+    if (dir == DIR_RIGHT) { ci = i; cj = j; cdir = 0; return true; }
+    if (dir == DIR_DOWN)  { ci = i; cj = j; cdir = 1; return true; }
+    if (dir == DIR_LEFT)  { ci = i; cj = j - 1; cdir = 0; return cj >= 0; }
+    if (dir == DIR_UP)    { ci = i - 1; cj = j; cdir = 1; return ci >= 0; }
+    return false;
+}
+
+static inline string edgeName(int i, int j, int k, int dir) {
+    int ci, cj, cdir;
+    if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return "";
+    ostringstream ss;
+    ss << "E_" << ci << "_" << cj << "_" << k << "_" << cdir;
+    return ss.str();
+}
+
+static inline string edgeNameFromSlot(int ci, int cj, int k, int cdir) {
+    ostringstream ss;
+    ss << "E_" << ci << "_" << cj << "_" << k << "_" << cdir;
+    return ss.str();
+}
+
+
+class SATEncoder {
+  private:
+    MetroMap &metro_map;
+    int next_var;
+    vector<string> var_to_literal;
+    unordered_map<string, int> literal_to_var;
+    int amo_seq_counter = 0;
+    int N, M, K, J;
+
+    vector<vector<int>> line_turn_vars;
+    vector<Clause> clauses;
+
+    int getVar(const string &name) {
+        auto it = literal_to_var.find(name);
+        if (it != literal_to_var.end()) return it->second;
+        int id = next_var++;
+        literal_to_var[name] = id;
+        var_to_literal.push_back(name);
+        return id;
+    }
+
+    Literal litByName(const string &name) { return Literal(getVar(name)); }
+    
+    // Helper for a derived presence var P(i,j,k) used for AMO/popular cities
+    // P(i,j,k) is TRUE iff any incident edge of line k touches (i,j).
+    Literal presenceVar(int i,int j,int k){
+        ostringstream ss; ss << "P_"<<i<<"_"<<j<<"_"<<k;
+        return litByName(ss.str());
+    }
+
+    Literal turnVar(int i,int j,int k){ return litByName(turnName(i,j,k)); }
+
+    void addClause(const Clause &clause) { clauses.push_back(clause); }
+
+    void addUnit(const Literal &lit) {
+        Clause c;
+        c.addLiteral(lit);
+        addClause(c);
+    }
+
+    void addImplication(const Literal &a, const Literal &b) {
+        Clause c;
+        c.addLiteral(a.neg());
+        c.addLiteral(b);
+        addClause(c);
+    }
+
+    void addAtLeastOne(const vector<Literal> &lits) {
+        if (lits.empty()) return;
+        Clause c;
+        for (const auto &lit : lits) c.addLiteral(lit);
+        addClause(c);
+    }
+
+    void addAtMostOne(const vector<Literal> &lits) {
+        for (size_t i = 0; i < lits.size(); ++i) {
+            for (size_t j = i + 1; j < lits.size(); ++j) {
+                Clause c;
+                c.addLiteral(lits[i].neg());
+                c.addLiteral(lits[j].neg());
+                addClause(c);
+            }
+        }
+    }
+
+    void addExactlyOne(const vector<Literal> &lits) {
+        if (lits.empty()) return;
+        addAtLeastOne(lits);
+        addAtMostOne(lits);
+    }
+
+    void addGuardedAtLeastOne(const Literal &guard, const vector<Literal> &lits) {
+        Clause c;
+        c.addLiteral(guard.neg());
+        for (const auto &lit : lits) c.addLiteral(lit);
+        addClause(c);
+    }
+
+    bool inBounds(int i, int j) const {
+        return (0 <= i && i < M && 0 <= j && j < N);
+    }
+
+    bool step(int i, int j, int dir, int &ni, int &nj) const {
+        ni = i;
+        nj = j;
+        switch (dir) {
+            case DIR_RIGHT: nj = j + 1; break;
+            case DIR_LEFT:  nj = j - 1; break;
+            case DIR_UP:    ni = i - 1; break;
+            case DIR_DOWN:  ni = i + 1; break;
+            default: return false;
+        }
+        return inBounds(ni, nj);
+    }
+
+    void encodeCellAMO() {
+        // At most one metro line uses a given cell (i,j) across all k.
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                // Derived presence vars P(i,j,k) from incident edges
+                vector<Literal> Pk; Pk.reserve(K);
+                for (int k = 0; k < K; ++k) {
+                    vector<pair<int,Literal>> edges;
+                    collectIncidentCanonicalEdges(i, j, k, edges);
+
+                    vector<Literal> incE; incE.reserve(edges.size());
+                    for (auto &pr: edges) incE.push_back(pr.second);
+
+                    if (incE.empty()) continue; // cell unusable for this k
+
+                    definePresenceVar(i, j, k, incE);
+                    Pk.push_back(presenceVar(i,j,k));
+                }
+                // Run AMO across the P(i,j,k)
+                addAtMostOneSequential(Pk);
+                // addAtMostOne(Pk);
+            }
+        }
+    }
+
+    void encodeEdgeAMOAcrossLines() {
+        // Horizontal slots: Cdir=0, between (i,j) to (i,j+1)
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N - 1; ++j) {
+                vector<Literal> Ek;
+                Ek.reserve(K);
+                for (int k = 0; k < K; ++k) {
+                    Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/0)));
+                }
+                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // for small K
+                // else addAtMostOneSequential(Ek); // if K is large
+                addAtMostOne(Ek);
+            }
+        }
+        // Vertical Slots: Cdir=1, between (i,j) to (i+1,j)
+
+        for (int i = 0; i < M - 1; ++i) {
+            for (int j = 0; j < N; ++j) {
+                vector<Literal> Ek;
+                Ek.reserve(K);
+                for (int k = 0; k < K; ++k) {
+                    Ek.push_back(litByName(edgeNameFromSlot(i, j, k, /*cdir=*/1)));
+                }
+                // if ((int)Ek.size() <= 6) addAtMostOne(Ek);        // for small K
+                // else addAtMostOneSequential(Ek); // if K is large
+                addAtMostOne(Ek);
+            }
+        }
+    }
+
+    void encodeLineFlow(int k) {
+        auto &starts = metro_map.getLineStarts(k);
+        auto &ends   = metro_map.getLineEnds(k);
+        int src_i = starts.second, src_j = starts.first;
+        int sink_i = ends.second,   sink_j = ends.first;
+
+        for (int i = 0; i < M; ++i) {
+            for (int j = 0; j < N; ++j) {
+                bool is_source = (i == src_i && j == src_j);
+                bool is_sink   = (i == sink_i && j == sink_j);
+
+                vector<pair<int,Literal>> edges;
+                collectIncidentCanonicalEdges(i, j, k, edges);
+
+                vector<Literal> E; E.reserve(edges.size());
+                for (auto &pr: edges) E.push_back(pr.second);
+
+                if (is_source || is_sink) {
+                    addAtLeastOne(E);       // deg >= 1
+                    addAtMostOne(E);        // deg <= 1
+                    continue;
+                }
+
+                // Interior Cells:
+                if ((int)E.size() >= 2) {
+                    // Edge-only degree=2 semantics for used cells:
+                    // Forbid degree 1 and 3; allow degree 0 or 2.
+                    interiorDegreeConstraints(E);
+                    // Encodes turn constraints from edge literals
+                    encodeTurnEdgeConstraints(i, j, k, edges);
+                }
+            }
+        }
+    }
+
+    // Sequential encoding for AtMostOne
+    void addAtMostOneSequential(const vector<Literal>& lits) {
+        const int n = (int)lits.size();
+        if (n <= 1) return;
+        
+        vector<int> s(n - 1);
+        for (int i = 0; i < n - 1; ++i) {
+            ostringstream ss;
+            ss << "S_AMO_" << (amo_seq_counter++) << "_" << i;
+            s[i] = getVar(ss.str());
+        }
+        
+        addClause(Clause{ lits[0].neg(), Literal(s[0]) });
+        
+        for (int i = 1; i < n - 1; ++i) {
+            addClause(Clause{ lits[i].neg(), Literal(s[i]) });
+            addClause(Clause{ Literal(s[i-1]).neg(), Literal(s[i]) });
+            addClause(Clause{ lits[i].neg(), Literal(s[i-1]).neg() });
+        }
+        
+        addClause(Clause{ lits[n-1].neg(), Literal(s[n-2]).neg() });
+    }
+
+    // Constructing canonical edge literals for (i,j) for line k
+    void collectIncidentCanonicalEdges(int i, int j, int k,
+                                    vector<pair<int,Literal>>& edges) {
+        edges.clear(); edges.reserve(4);
+        auto push_if = [&](int dir) {
+            int ci, cj, cdir;
+            if (!canonicalEdge(i, j, dir, ci, cj, cdir)) return;
+            // Neighbor must be in-bounds for the original step
+            int ni, nj; if (!step(i, j, dir, ni, nj)) return;
+            string en = edgeName(i, j, k, dir);
+            if (en.empty()) return;
+            edges.push_back({dir, litByName(en)});
+        };
+        push_if(DIR_RIGHT);
+        push_if(DIR_LEFT);
+        push_if(DIR_UP);
+        push_if(DIR_DOWN);
+    }
+
+    // Interior Constraints 
+    void interiorDegreeConstraints(const vector<Literal>& E) {
+        const int d = (int)E.size(); // d <= 4
+        if (d < 2) return;           
+
+        // Degree 1 forbidden
+        for (int t = 0; t < d; ++t) {
+            Clause c; c.addLiteral(E[t].neg());
+            for (int u = 0; u < d; ++u) if (u != t) c.addLiteral(E[u]);
+            addClause(c);
+        }
+        // Disallowing degree 3 and 4
+        for (int a = 0; a < d; ++a)
+            for (int b = a+1; b < d; ++b)
+                for (int c = b+1; c < d; ++c)
+                    addClause(Clause{ E[a].neg(), E[b].neg(), E[c].neg() });
+    }
+
+    // Encoding Turn from edge literals
+    void encodeTurnEdgeConstraints(int i,int j,int k,
+                                    const vector<pair<int,Literal>>& edges) {
+        // Available Directions
+        Literal Er(0,false), El(0,false), Eu(0,false), Ed(0,false);
+        bool hr=false, hl=false, hu=false, hd=false;
+        for (auto &pr: edges) {
+            if (pr.first==DIR_RIGHT){ Er=pr.second; hr=true; }
+            if (pr.first==DIR_LEFT ){ El=pr.second; hl=true; }
+            if (pr.first==DIR_UP   ){ Eu=pr.second; hu=true; }
+            if (pr.first==DIR_DOWN ){ Ed=pr.second; hd=true; }
+        }
+        bool hasH = (hr||hl), hasV=(hu||hd);
+        if (!(hasH && hasV)) return;
+
+        Literal T = turnVar(i,j,k);
+        
+        if (hu && hd) addClause(Clause{ Eu.neg(), Ed.neg(), T.neg() });
+        if (hl && hr) addClause(Clause{ El.neg(), Er.neg(), T.neg() });
+
+        
+        if (hu && hl) addClause(Clause{ Eu.neg(), El.neg(), T });
+        if (hu && hr) addClause(Clause{ Eu.neg(), Er.neg(), T });
+        if (hd && hl) addClause(Clause{ Ed.neg(), El.neg(), T });
+        if (hd && hr) addClause(Clause{ Ed.neg(), Er.neg(), T });
+
+        if (line_turn_vars[k].empty() || line_turn_vars[k].back()!=T.id)
+            line_turn_vars[k].push_back(T.id);
+    }
+
+    void definePresenceVar(int i,int j,int k, const vector<Literal>& incE) {
+        if (incE.empty()) return; // unreachable cell
+        Literal P = presenceVar(i,j,k);
+        {
+            Clause c; c.addLiteral(P.neg());
+            for (auto &e: incE) c.addLiteral(e);
+            addClause(c);
+        }
+        for (auto &e: incE) addClause(Clause{ e.neg(), P });
+    }
+
+    void enforceTurnBudget(int k) {
+        if (J < 0) return;
+        auto &turn_ids = line_turn_vars[k];
+        if (turn_ids.empty()) return;
+
+        vector<Literal> turn_lits;
+        turn_lits.reserve(turn_ids.size());
+        for (int id : turn_ids) turn_lits.emplace_back(id);
+
+        if (J == 0) {
+            for (auto &lit : turn_lits) {
+                Clause c{lit.neg()};
+                addClause(c);                  // No turns allowed.
+            }
+            return;
+        }
+        if ((int)turn_lits.size() <= J) return;  // Fewer candidates than the budget.
+
+        int n = turn_lits.size();
+        vector<vector<int>> seq_id(n + 1, vector<int>(J + 1, 0));
+        for (int i = 1; i <= n; ++i) {
+            for (int t = 1; t <= J; ++t) {
+                seq_id[i][t] = getVar(turnSeqName(k, i, t));
+            }
+        }
+
+        {
+            Clause c;
+            c.addLiteral(turn_lits[0].neg());
+            c.addLiteral(Literal(seq_id[1][1]));
+            addClause(c);                      // turn_1 → s_1,1
+        }
+        for (int t = 2; t <= J; ++t) {
+            Clause c{Literal(seq_id[1][t]).neg()};
+            addClause(c);                      // s_1,t = false for t > 1
+        }
+
+        for (int i = 2; i <= n; ++i) {
+            Clause c1;
+            c1.addLiteral(turn_lits[i - 1].neg());
+            c1.addLiteral(Literal(seq_id[i][1]));
+            addClause(c1);                     // turn_i → s_i,1
+
+            Clause c2;
+            c2.addLiteral(Literal(seq_id[i - 1][1]).neg());
+            c2.addLiteral(Literal(seq_id[i][1]));
+            addClause(c2);                     // s_{i-1,1} → s_{i,1}
+
+            for (int t = 2; t <= J; ++t) {
+                Clause carry;
+                carry.addLiteral(Literal(seq_id[i - 1][t]).neg());
+                carry.addLiteral(Literal(seq_id[i][t]));
+                addClause(carry);              // s_{i-1,t} → s_{i,t}
+
+                Clause rise;
+                rise.addLiteral(turn_lits[i - 1].neg());
+                rise.addLiteral(Literal(seq_id[i - 1][t - 1]).neg());
+                rise.addLiteral(Literal(seq_id[i][t]));
+                addClause(rise);               // (turn_i ∧ s_{i-1,t-1}) → s_{i,t}
+            }
+
+            Clause cap;
+            cap.addLiteral(turn_lits[i - 1].neg());
+            cap.addLiteral(Literal(seq_id[i - 1][J]).neg());
+            addClause(cap);                    // turn_i → ¬s_{i-1,J}
+        }
+    }
+
+    void encodeTurnBudget() {
+        for (int k = 0; k < K; ++k) {
+            enforceTurnBudget(k);
+        }
+    }
+
+    void encodePopularCities() {
+        int Pgroups = metro_map.getPopularCitiesCount();
+        if (Pgroups <= 0) return;
+
+        auto &groups = metro_map.getPopularCities(); // now a flat vector of (col,row)
+        for (int p = 0; p < Pgroups; ++p) {
+            Clause coverage; // this popular cell must be covered by some line
+            int col = groups[p].first;
+            int row = groups[p].second;
+            if (!inBounds(row, col)) continue;
+
+            for (int k = 0; k < K; ++k) {
+                vector<pair<int,Literal>> edges;
+                collectIncidentCanonicalEdges(row, col, k, edges);
+                if (edges.empty()) continue;
+
+                // reuse presence variable: P(row,col,k) ↔ OR(incident edges)
+                vector<Literal> incE; incE.reserve(edges.size());
+                for (auto &pr: edges) incE.push_back(pr.second);
+                definePresenceVar(row, col, k, incE);
+
+                coverage.addLiteral(presenceVar(row, col, k)); // use P in the big OR
+            }
+            if (!coverage.empty()) addClause(coverage);
+        }
+    }
+
+
+  public:
+    SATEncoder(MetroMap &m) : metro_map(m) {
+        next_var = 1;
+        N = metro_map.getColNum();
+        M = metro_map.getRowNum();
+        K = metro_map.getLineNum();
+        J = metro_map.getTurnLimit();
+        line_turn_vars.resize(K);
+        amo_seq_counter = 0;
+    }
+
+    int variableCount() const { return next_var - 1; }
+    size_t clauseCount() const { return clauses.size(); }
+
+    const vector<Clause>& getClauses() const { return clauses; }
+    const vector<string>& getVariableNames() const { return var_to_literal; }
+
+    void encode() {
+        encodeCellAMO();
+        encodeEdgeAMOAcrossLines();
+        for (int k = 0; k < K; ++k) {
+            encodeLineFlow(k);
+        }
+        encodeTurnBudget();
+        encodePopularCities();
+    }
+
+    bool outputDIMACS(const string &filename) const {
+        ofstream out(filename.c_str());
+        if (!out.is_open()) {
+            cerr << "Error: Cannot open DIMACS file for writing: " << filename << endl;
+            return false;
+        }
+       
+        out << "p cnf " << variableCount() << " " << clauseCount() << '\n';
+        for (const auto &clause : clauses) {
+            for (int lit : clause.lits) out << lit << ' ';
+            out << "0\n";
+        }
+        return true;
+    }
+
+    bool outputDIMACS_v1(const string &filename) const {
+        ios::sync_with_stdio(false);
+        cin.tie(nullptr);
+
+        ofstream out(filename);
+        if (!out.is_open()) {
+            cerr << "Error: Cannot open DIMACS file for writing: " << filename << endl;
+            return false;
+        }
+
+        // Attach a large internal buffer (1 MB)
+        static vector<char> outbuf(1 << 20);
+        out.rdbuf()->pubsetbuf(outbuf.data(), outbuf.size());
+
+        out << "p cnf " << variableCount() << " " << clauseCount() << '\n';
+
+        string buffer;
+        buffer.reserve(1 << 20);
+
+        for (const auto &clause : clauses) {
+            for (int lit : clause.lits) {
+                buffer += to_string(lit);
+                buffer += ' ';
+            }
+            buffer += "0\n";
+
+            if (buffer.size() > (1 << 20)) {
+                out << buffer;
+                buffer.clear();
+            }
+        }
+
+        out << buffer;
+        out.close();
+        return true;
+    }
+
+    bool outputDIMACS_v2(const string &filename) const {
+        FILE* f = fopen(filename.c_str(), "w");
+        if (!f) {
+            cerr << "Error: Cannot open DIMACS file for writing: " << filename << endl;
+            return false;
+        }
+
+        static char filebuf[1 << 20];  // 1 MB buffer
+        setvbuf(f, filebuf, _IOFBF, sizeof(filebuf));
+
+        fprintf(f, "p cnf %d %ld\n", variableCount(), clauseCount());
+
+        string buffer;
+        buffer.reserve(1 << 20);
+
+        for (const auto &clause : clauses) {
+            for (int lit : clause.lits) {
+                buffer += to_string(lit);
+                buffer += ' ';
+            }
+            buffer += "0\n";
+
+            if (buffer.size() > (1 << 20)) {
+                fwrite(buffer.data(), 1, buffer.size(), f);
+                buffer.clear();
+            }
+        }
+
+        fwrite(buffer.data(), 1, buffer.size(), f);
+        fclose(f);
+        return true;
+    }
+
+    bool outputVariableMapping(const string &filename) const {
+        ofstream out(filename.c_str());
+        if (!out.is_open()) {
+            cerr << "Error: Cannot open variable map file for writing: " << filename << endl;
+            return false;
+        }
+        for (size_t idx = 0; idx < var_to_literal.size(); ++idx) {
+            out << (idx + 1) << ' ' << var_to_literal[idx] << '\n';
+        }
+        return true;
+    }
+
+    bool outputVariableMapping_v1(const string &filename) const {
+        ios::sync_with_stdio(false);
+        cin.tie(nullptr);
+
+        ofstream out(filename);
+        if (!out.is_open()) {
+            cerr << "Error: Cannot open variable map file for writing: " << filename << endl;
+            return false;
+        }
+
+        static vector<char> outbuf(1 << 20); // 1MB buffer
+        out.rdbuf()->pubsetbuf(outbuf.data(), outbuf.size());
+
+        string buffer;
+        buffer.reserve(1 << 20);
+
+        for (size_t idx = 0; idx < var_to_literal.size(); ++idx) {
+            buffer += to_string(idx + 1);
+            buffer += ' ';
+            buffer += var_to_literal[idx];
+            buffer += '\n';
+
+            if (buffer.size() > (1 << 20)) {
+                out << buffer;
+                buffer.clear();
+            }
+        }
+
+        out << buffer;
+        out.close();
+        return true;
+    }
+};
+
+int main(int argc, char* argv[]) {
+
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    if (argc != 3) {
+        cerr << "Usage: " << argv[0] << " <input.metromap> <output.cnf>" << endl;
+        return 1;
+    }
+
+    const string input_path = argv[1];
+    const string cnf_path   = argv[2];
+
+    ifstream input_stream(input_path.c_str());
+    if (!input_stream.is_open()) {
+        cerr << "Error: Unable to open input file " << input_path << endl;
+        return 1;
+    }
+
+    MetroMap metro_map = parseInputFile(input_stream);
+    input_stream.close();
+
+    SATEncoder encoder(metro_map);
+    encoder.encode();
+
+    if (!encoder.outputDIMACS_v1(cnf_path)) return 1;
+
+    const string map_path = cnf_path + ".map";
+    if (!encoder.outputVariableMapping_v1(map_path)) return 1;
+
+    return 0;
+}
