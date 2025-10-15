@@ -92,9 +92,9 @@ class MetroMap {
         // Input Parsing
         int rows, cols, lines, turn_limit, pop_cities_sz;
         vector<vector<Cell>> grid;
-        vector<vector<pair<int,int>>> line_starts;
-        vector<vector<pair<int,int>>> line_ends;
-        vector<vector<pair<int,int>>> popular_cities; 
+        vector<pair<int,int>> line_starts;
+        vector<pair<int,int>> line_ends;
+        vector<pair<int,int>> popular_cities; 
 
         // SAT MAGIC
         // Solution Representation - For each line, store the coordinates of the cells it occupies
@@ -115,17 +115,17 @@ class MetroMap {
             grid.resize(rows, vector<Cell>(cols, Cell()));
         }
 
-        void setLineStarts(vector<vector<pair<int,int>>> ls) {
+        void setLineStarts(vector<pair<int,int>> ls) {
             line_starts.resize(lines);
             line_starts = ls;
         }
 
-        void setLineEnds(vector<vector<pair<int,int>>> le) {
+        void setLineEnds(vector<pair<int,int>> le) {
             line_ends.resize(lines);
             line_ends = le;
         }
 
-        void setPopularCities(vector<vector<pair<int,int>>> ps) {
+        void setPopularCities(vector<pair<int,int>> ps) {
             popular_cities.resize(pop_cities_sz);
             popular_cities = ps;
         }
@@ -134,8 +134,8 @@ class MetroMap {
             // Assumes that the grid is already setup with Proper Cell Values and that the Solution is SAT
             line_path.resize(lines);
             for (int i = 0; i < lines; i++) {
-                pair<int,int> start = line_starts[i][0];
-                pair<int,int> end = line_ends[i][0]; 
+                pair<int,int> start = line_starts[i];
+                pair<int,int> end = line_ends[i]; 
                 pair<int,int> curr = start;
                 while (curr != end) {
                     CellDir mode = grid[curr.second][curr.first].getMode();
@@ -168,39 +168,41 @@ class MetroMap {
             cout << "Line Starts: (col, row)" << endl;
             for (int i = 0; i < lines; i++) {
                 cout << "Line " << i+1 << ": ";
-                for (auto &p : line_starts[i]) {
-                    cout << "(" << p.first << "," << p.second << ") ";
-                }
+                cout << "(" << line_starts[i].first << "," << line_starts[i].second << ") ";
                 cout << endl;
             }
             cout << "Line Ends: (col, row)" << endl;
             for (int i = 0; i < lines; i++) {
                 cout << "Line " << i+1 << ": ";
-                for (auto &p : line_ends[i]) {
-                    cout << "(" << p.first << "," << p.second << ") ";
-                }
+                cout << "(" << line_ends[i].first << "," << line_ends[i].second << ") ";
                 cout << endl;
             }
             cout << "Popular Cities:" << endl;
-            for (int i = 0; i < pop_cities_sz; i++) {
-                cout << "Cities " << i+1 << ": ";
-                for (auto &p : popular_cities[i]) {
-                    cout << "(" << p.first << "," << p.second << ") ";
-                }
-                cout << endl;
+            cout << "Cities " << pop_cities_sz << ": ";
+            for (auto &p : popular_cities) {
+                cout << "(" << p.first << "," << p.second << ") ";
             }
+            cout << endl;
+
+            cout << "Popular Cities:" << endl;
+            cout << "Cities " << pop_cities_sz << ": ";
+            for (auto &p : popular_cities) {
+                cout << "(" << p.first << "," << p.second << ") ";
+            }
+            cout << endl;
+            
         }
 
         // Getters for Encoder
 
-        vector<pair<int,int>>& getLineStarts(int k) {
+        pair<int,int>& getLineStarts(int k) {
             if (k < 0 || k >= lines) {
                 throw out_of_range("Invalid line number in getLineStarts");
             }
             return line_starts[k];
         }
 
-        vector<pair<int,int>>& getLineEnds(int k) {
+        pair<int,int>& getLineEnds(int k) {
             if (k < 0 || k >= lines) {
                 throw out_of_range("Invalid line number in getLineEnds");
             }
@@ -233,7 +235,7 @@ class MetroMap {
         }
         int getPopularCitiesCount() { return pop_cities_sz; }
 
-        vector<vector<pair<int,int>>>& getPopularCities() {
+        vector<pair<int,int>>& getPopularCities() {
             return popular_cities;
         }
 
@@ -256,25 +258,25 @@ MetroMap parseInputFile(ifstream &input_file_stream) {
     MetroMap metro_map(rows, cols, lines, turn_limit, pop_stations_sz);
     // metro_map.setGrid();
 
-    vector<vector<pair<int, int>>> line_starts(lines);
-    vector<vector<pair<int, int>>> line_ends(lines);
+    vector<pair<int, int>> line_starts(lines);
+    vector<pair<int, int>> line_ends(lines);
 
     for (int i = 0; i < lines; i++) {
         int start_x, start_y, end_x, end_y;
         input_file_stream >> start_x >> start_y >> end_x >> end_y;
-        line_starts[i].emplace_back(start_x, start_y);
-        line_ends[i].emplace_back(end_x, end_y);
+        line_starts[i] = make_pair(start_x, start_y);
+        line_ends[i] = make_pair(end_x, end_y);
     }
 
     metro_map.setLineStarts(line_starts);
     metro_map.setLineEnds(line_ends);
 
     if (mode == 2 && pop_stations_sz > 0) {
-        vector<vector<pair<int, int>>> popular_stations(pop_stations_sz);
+        vector<pair<int, int>> popular_stations(pop_stations_sz);
         for (int i = 0; i < pop_stations_sz; i++) {
             int pop_x, pop_y;
             input_file_stream >> pop_x >> pop_y;
-            popular_stations[i].emplace_back(pop_x, pop_y);
+            popular_stations[i] = make_pair(pop_x, pop_y);
         }
         metro_map.setPopularCities(popular_stations);
     }

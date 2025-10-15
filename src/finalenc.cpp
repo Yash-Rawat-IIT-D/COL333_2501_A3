@@ -187,7 +187,8 @@ class SATEncoder {
                     Pk.push_back(presenceVar(i,j,k));
                 }
                 // Run AMO (sequential) across the P(i,j,k)
-                addAtMostOneSequential(Pk);
+                // addAtMostOneSequential(Pk);
+                addAtMostOne(Pk);
             }
         }
     }
@@ -196,8 +197,8 @@ class SATEncoder {
     void encodeLineFlow(int k) {
         auto &starts = metro_map.getLineStarts(k);
         auto &ends   = metro_map.getLineEnds(k);
-        int src_i = starts[0].second, src_j = starts[0].first;
-        int sink_i = ends[0].second,   sink_j = ends[0].first;
+        int src_i = starts.second, src_j = starts.first;
+        int sink_i = ends.second,   sink_j = ends.first;
 
         for (int i = 0; i < M; ++i) {
             for (int j = 0; j < N; ++j) {
@@ -511,7 +512,7 @@ class SATEncoder {
         auto &groups = metro_map.getPopularCities();
         for (int p = 0; p < Pgroups; ++p) {
             Clause coverage; // big OR over all k and incident edges at those cells
-            for (auto &cell : groups[p]) {
+            for (auto &cell : groups) {
                 int col = cell.first, row = cell.second;
                 if (!inBounds(row, col)) continue;
                 for (int k = 0; k < K; ++k) {

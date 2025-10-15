@@ -191,14 +191,14 @@ private:
     // }
 
     string reconstructPath(int line_k) const {
-        const auto &starts = metro_map.getLineStarts(line_k);
-        const auto &ends   = metro_map.getLineEnds(line_k);
-        if (starts.empty() || ends.empty()) return string("0\n");
+        const auto &start = metro_map.getLineStarts(line_k);
+        const auto &end   = metro_map.getLineEnds(line_k);
+        // if (start.empty() || end.empty()) return string("0\n");
 
-        int start_x = starts[0].first;   // column (j)
-        int start_y = starts[0].second;  // row    (i)
-        int end_x   = ends[0].first;
-        int end_y   = ends[0].second;
+        int start_x = start.first;   // column (j)
+        int start_y = start.second;  // row    (i)
+        int end_x   = end.first;
+        int end_y   = end.second;
 
         string path;
         int curr_x = start_x, curr_y = start_y;

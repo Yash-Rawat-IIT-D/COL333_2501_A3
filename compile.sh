@@ -1,47 +1,35 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -e  # Exit on any error
 
-# Usage: ./compile.sh sample6  (or ./compile.sh input/sample6)
-BASE="${1:?Usage: $0 <base-name or path>}"
-[[ "$BASE" == */* ]] && TARGET="$BASE" || TARGET="input/$BASE"
+echo "Compiling COL333 Assignment 3 - Metro Line Routing SAT Solver"
 
-echo "[1/6] Cleaning old binaries…"
-rm -f encoder decoder
+CXX="g++"
+CXXFLAGS="-Wall -Wextra -O3 -std=c++17"
+SRC_DIR="src"
 
-echo "[2/6] Building encoder…"
-# uncomment this for old encoder and decoder
-# g++ -std=c++17 -O2 -I src -o encoder src/encoder.cpp
-# g++ -std=c++17 -O2 -I src -o encoder src/newenc.cpp
-g++ -std=c++17 -O2 -I src -o encoder src/finalenc.cpp
-
-echo "[3/6] Building decoder…"
-# g++ -std=c++17 -O2 -I src -o decoder src/decoder.cpp
-# g++ -std=c++17 -O2 -I src -o decoder src/newdec.cpp
-g++ -std=c++17 -O2 -I src -o decoder src/finaldec.cpp
-
-echo "[4/6] Running run1 on ${TARGET}…"
-./run1.sh "$TARGET"
-
-echo "[5/6] Running minisat on ${TARGET}.satinput → ${TARGET}.satoutput…"
-set +e
-minisat "${TARGET}.satinput" "${TARGET}.satoutput"
-MS=$?
-set -e
-
-case "$MS" in
-  10) echo "minisat: SAT"; SAT_STATUS="SAT";;
-  20) echo "minisat: UNSAT"; SAT_STATUS="UNSAT";;
-   0) echo "minisat: returned 0 (interrupted/unknown)"; SAT_STATUS="UNKNOWN";;
-  *)  echo "minisat: error (exit $MS)"; exit "$MS";;
-esac
-
-if [[ "$SAT_STATUS" == "SAT" ]] || grep -q "SATISFIABLE" "${TARGET}.satoutput" 2>/dev/null; then
-  echo "[6/6] Running run2 on ${TARGET}…"
-  ./run2.sh "$TARGET"
-  echo "[✓] Running format checker…"
-  python3 format_checker.py "$TARGET" --verbose
+echo "Building encoder..."
+if ${CXX} ${CXXFLAGS} -o encoder ${SRC_DIR}/finalenc.cpp; then
+    echo "encoder compiled successfully"
 else
-  echo "[i] Instance is UNSAT (or not SAT). Skipping run2/format checker."
+    echo "Failed to compile encoder"
+    exit 1
 fi
 
-echo "Done."
+echo "Building decoder..."
+if ${CXX} ${CXXFLAGS} -o decoder ${SRC_DIR}/finaldec.cpp; then
+    echo "decoder compiled successfully"
+else
+    echo "Failed to compile decoder"
+    exit 1
+fi
+
+# echo "All binaries compiled successfully!"
+# echo "Executables created:"
+# echo "  - encoder (SAT formula generator)"
+# echo "  - decoder (Solution parser)"
+
+chmod +x encoder decoder
+
+# echo "Usage:"
+# echo "  ./encoder <input.metromap> <output.cnf>"
+# echo "  ./decoder <solution.sat> <output.city>"
